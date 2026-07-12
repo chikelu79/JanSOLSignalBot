@@ -1,14 +1,10 @@
-import asyncio
 import logging
 import os
+from typing import Any
 
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-)
-from tradingview_ta import Exchange, Interval, TA_Handler
+import httpx
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 
 logging.basicConfig(
@@ -19,227 +15,194 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
+
+TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+
+app = FastAPI(title="Jan SOL Signal Bot")
 
 
-def get_sol_analysis():
-    handler = TA_Handler(
-        symbol="SOLUSDT",
-        screener="crypto",
-        exchange=Exchange.BINANCE,
-        interval=Interval.INTERVAL_15_MINUTES,
-        timeout=15,
-    )
-
-    return handler.get_analysis()
-
-
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+async def send_telegram_message(
+    chat_id: str,
+    text: str,
 ) -> None:
-    user_id = update.effective_user.id
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.post(
+            f"{TELEGRAM_API}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+        )
 
-    await update.message.reply_text(
-        "✅ Jan SOL Signal Bot is online!\n\n"
-        f"Your Telegram ID: {user_id}\n\n"
-        "Available commands:\n"
-        "/price - Current SOL price\n"
-        "/analysis - TradingView analysis\n"
-        "/status - Bot status"
-    )
-
-
-async def status(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    await update.message.reply_text(
-        "🟢 Bot status: ONLINE\n"
-        "📈 Market: SOL/USDT\n"
-        "🕯 Timeframe: 15 minutes\n"
-        "📡 Data: TradingView\n"
-        "🤖 Mode: Alerts only\n"
-        "🚫 Automatic trading: Disabled"
-    )
+        response.raise_for_status()
 
 
-async def price(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    message = await update.message.reply_text(
-        "⏳ Retrieving SOL price from TradingView..."
-    )
+@app.get("/")
+async def home() -> dict[str, str]:
+    return {
+        "status": "online",
+        "bot": "Jan SOL Signal Bot",
+    }
+
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "healthy"}
+
+
+@app.post("/telegram")
+async def telegram_webhook(request: Request) -> JSONResponse:
+    update: dict[str, Any] = await request.json()
+
+    message = update.get("message") or update.get("edited_message")
+
+    if not message:
+        return JSONResponse({"ok": True})
+
+    chat = message.get("chat", {})
+    user = message.get("from", {})
+    chat_id = str(chat.get("id", ""))
+    user_id = user.get("id", "Unknown")
+    text = str(message.get("text", "")).strip().lower()
 
     try:
-        analysis = await asyncio.to_thread(get_sol_analysis)
-        current_price = analysis.indicators.get("close")
+        if text.startswith("/start"):
+            response_text = (
+                "✅ <b>Jan SOL Signal Bot is online!</b>\n\n"
+                f"Your Telegram ID: <code>{user_id}</code>\n\n"
+                "<b>Available commands</b>\n"
+                "/status - Bot status\n"
+                "/chatid - Show this chat ID\n"
+                "/help - Show available commands"
+            )
 
-        if current_price is None:
-            raise ValueError("TradingView returned no closing price.")
+        elif text.startswith("/status"):
+            response_text = (
+                "🟢 <b>Bot status: ONLINE</b>\n"
+                "📈 Market: SOL/USDT\n"
+                "📡 Alerts: TradingView webhooks\n"
+                "🏦 Exchange: Binance\n"
+                "🤖 Mode: Alerts only\n"
+                "🚫 Automatic trading: Disabled"
+            )
 
-        await message.edit_text(
-            "💰 SOL LIVE PRICE\n\n"
-            f"SOL/USDT: ${current_price:,.2f}\n"
-            "Source: TradingView\n"
-            "Exchange: Binance\n"
-            "Timeframe: 15 minutes"
-        )
+        elif text.startswith("/chatid"):
+            response_text = (
+                "Your Telegram chat ID is:\n"
+                f"<code>{chat_id}</code>"
+            )
 
-    except Exception as error:
-        logger.exception("Price request failed: %s", error)
+        elif text.startswith("/help"):
+            response_text = (
+                "<b>Jan SOL Signal Bot commands</b>\n\n"
+                "/start - Start the bot\n"
+                "/status - Check bot status\n"
+                "/chatid - Show chat ID\n"
+                "/help - Show this menu"
+            )
 
-        await message.edit_text(
-            "⚠️ I could not retrieve the SOL price right now.\n"
-            "Please try again shortly."
-        )
-
-
-async def analysis_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    message = await update.message.reply_text(
-        "🔍 Running TradingView analysis..."
-    )
-
-    try:
-        analysis = await asyncio.to_thread(get_sol_analysis)
-
-        summary = analysis.summary
-        indicators = analysis.indicators
-
-        recommendation = summary.get("RECOMMENDATION", "NEUTRAL")
-        buy_count = summary.get("BUY", 0)
-        neutral_count = summary.get("NEUTRAL", 0)
-        sell_count = summary.get("SELL", 0)
-
-        current_price = indicators.get("close")
-        rsi = indicators.get("RSI")
-        ema20 = indicators.get("EMA20")
-        ema50 = indicators.get("EMA50")
-        ema200 = indicators.get("EMA200")
-        macd = indicators.get("MACD.macd")
-        macd_signal = indicators.get("MACD.signal")
-
-        price_text = (
-            f"${current_price:,.2f}"
-            if isinstance(current_price, (int, float))
-            else "Unavailable"
-        )
-
-        rsi_text = (
-            f"{rsi:.2f}"
-            if isinstance(rsi, (int, float))
-            else "Unavailable"
-        )
-
-        ema20_text = (
-            f"${ema20:,.2f}"
-            if isinstance(ema20, (int, float))
-            else "Unavailable"
-        )
-
-        ema50_text = (
-            f"${ema50:,.2f}"
-            if isinstance(ema50, (int, float))
-            else "Unavailable"
-        )
-
-        ema200_text = (
-            f"${ema200:,.2f}"
-            if isinstance(ema200, (int, float))
-            else "Unavailable"
-        )
-
-        macd_text = (
-            f"{macd:.4f}"
-            if isinstance(macd, (int, float))
-            else "Unavailable"
-        )
-
-        macd_signal_text = (
-            f"{macd_signal:.4f}"
-            if isinstance(macd_signal, (int, float))
-            else "Unavailable"
-        )
-
-        if "STRONG_BUY" in recommendation:
-            signal_emoji = "🚀"
-        elif recommendation == "BUY":
-            signal_emoji = "🟢"
-        elif "STRONG_SELL" in recommendation:
-            signal_emoji = "🔻"
-        elif recommendation == "SELL":
-            signal_emoji = "🔴"
         else:
-            signal_emoji = "🟡"
+            return JSONResponse({"ok": True})
 
-        await message.edit_text(
-            "📊 TRADINGVIEW SOL ANALYSIS\n\n"
-            f"{signal_emoji} Signal: {recommendation.replace('_', ' ')}\n"
-            f"💰 Price: {price_text}\n"
-            "🕯 Timeframe: 15 minutes\n\n"
-            f"✅ Buy indicators: {buy_count}\n"
-            f"➖ Neutral indicators: {neutral_count}\n"
-            f"❌ Sell indicators: {sell_count}\n\n"
-            f"RSI: {rsi_text}\n"
-            f"EMA 20: {ema20_text}\n"
-            f"EMA 50: {ema50_text}\n"
-            f"EMA 200: {ema200_text}\n"
-            f"MACD: {macd_text}\n"
-            f"MACD signal: {macd_signal_text}\n\n"
-            "Source: TradingView via tradingview-ta\n"
-            "⚠️ Analysis only, not financial advice."
+        await send_telegram_message(chat_id, response_text)
+
+    except Exception:
+        logger.exception("Telegram command failed")
+
+    return JSONResponse({"ok": True})
+
+
+@app.post("/tradingview")
+async def tradingview_webhook(
+    request: Request,
+    x_webhook_secret: str | None = Header(default=None),
+) -> JSONResponse:
+    if not WEBHOOK_SECRET:
+        raise HTTPException(
+            status_code=500,
+            detail="WEBHOOK_SECRET is not configured",
         )
 
+    if x_webhook_secret != WEBHOOK_SECRET:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid webhook secret",
+        )
+
+    if not TELEGRAM_CHAT_ID:
+        raise HTTPException(
+            status_code=500,
+            detail="TELEGRAM_CHAT_ID is not configured",
+        )
+
+    try:
+        payload = await request.json()
+    except Exception:
+        raw_body = (await request.body()).decode(
+            "utf-8",
+            errors="replace",
+        )
+        payload = {"message": raw_body}
+
+    if isinstance(payload, dict):
+        symbol = payload.get("symbol", "SOLUSDT")
+        exchange = payload.get("exchange", "BINANCE")
+        timeframe = payload.get("timeframe", "Unknown")
+        signal = payload.get("signal", "ALERT")
+        price = payload.get("price", "Unknown")
+        message_text = payload.get("message", "")
+
+        alert_text = (
+            "🚨 <b>TRADINGVIEW ALERT</b>\n\n"
+            f"Signal: <b>{signal}</b>\n"
+            f"Market: {exchange}:{symbol}\n"
+            f"Price: {price}\n"
+            f"Timeframe: {timeframe}"
+        )
+
+        if message_text:
+            alert_text += f"\n\n{message_text}"
+    else:
+        alert_text = (
+            "🚨 <b>TRADINGVIEW ALERT</b>\n\n"
+            f"{payload}"
+        )
+
+    try:
+        await send_telegram_message(
+            TELEGRAM_CHAT_ID,
+            alert_text,
+        )
     except Exception as error:
-        logger.exception("TradingView analysis failed: %s", error)
+        logger.exception("TradingView alert failed")
+        raise HTTPException(
+            status_code=502,
+            detail="Telegram delivery failed",
+        ) from error
 
-        await message.edit_text(
-            "⚠️ TradingView analysis could not be retrieved.\n"
-            "Please try again shortly."
-        )
+    logger.info("TradingView alert delivered")
 
-
-async def error_handler(
-    update: object,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    logger.exception(
-        "Telegram update caused an error:",
-        exc_info=context.error,
+    return JSONResponse(
+        {
+            "ok": True,
+            "message": "Alert delivered",
+        }
     )
 
 
-def main() -> None:
+@app.on_event("startup")
+async def startup_event() -> None:
     if not TELEGRAM_TOKEN:
-        raise ValueError(
-            "TELEGRAM_BOT_TOKEN is missing from Railway Variables."
-        )
+        logger.error("TELEGRAM_BOT_TOKEN is missing")
 
-    application = (
-        ApplicationBuilder()
-        .token(TELEGRAM_TOKEN)
-        .build()
-    )
+    if not TELEGRAM_CHAT_ID:
+        logger.warning("TELEGRAM_CHAT_ID is missing")
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("status", status))
-    application.add_handler(CommandHandler("price", price))
-    application.add_handler(
-        CommandHandler("analysis", analysis_command)
-    )
+    if not WEBHOOK_SECRET:
+        logger.warning("WEBHOOK_SECRET is missing")
 
-    application.add_error_handler(error_handler)
-
-    logger.info("Jan SOL Signal Bot started")
-
-    application.run_polling(
-        drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES,
-    )
-
-
-if __name__ == "__main__":
-    main()
+    logger.info("Jan SOL Signal Bot web server started")
