@@ -6,3 +6,5 @@ ta==0.11.0
 websockets==12.0
 aiohttp==3.9.5
 python-dotenv==1.0.1
+flask==3.0.3
+gunicorn==22.0.0
