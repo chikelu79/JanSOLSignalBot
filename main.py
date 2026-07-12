@@ -3,18 +3,14 @@ import logging
 import os
 from typing import Any
 
-import httpx
+import aiohttp
 from telegram import Update
 from telegram.ext import (
-    Application,
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
 )
 
-# ---------------------------------------------------------
-# LOGGING
-# ---------------------------------------------------------
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -24,416 +20,173 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------
-# SETTINGS
-# ---------------------------------------------------------
-
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 
-BINANCE_BASE_URL = "https://data-api.binance.vision"
+BINANCE_BASE_URLS = [
+    "https://api.binance.com",
+    "https://api1.binance.com",
+    "https://api2.binance.com",
+    "https://api3.binance.com",
+]
 
 SYMBOL = "SOLUSDT"
-TIMEFRAME = "15m"
-CANDLE_LIMIT = 250
 
-HTTP_TIMEOUT = 20.0
+TIMEFRAMES = {
+    "5m": "5 minutes",
+    "15m": "15 minutes",
+    "1h": "1 hour",
+    "4h": "4 hours",
+    "8h": "8 hours",
+    "1d": "1 day",
+}
 
 
-# ---------------------------------------------------------
-# BINANCE DATA
-# ---------------------------------------------------------
-
-async def binance_request(
+async def request_binance(
     endpoint: str,
     params: dict[str, Any],
 ) -> Any:
-    url = f"{BINANCE_BASE_URL}{endpoint}"
+    timeout = aiohttp.ClientTimeout(total=20)
 
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-        response = await client.get(url, params=params)
-        response.raise_for_status()
-        return response.json()
+    last_error: Exception | None = None
 
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for base_url in BINANCE_BASE_URLS:
+            url = f"{base_url}{endpoint}"
 
-async def get_current_price() -> float:
-    data = await binance_request(
-        "/api/v3/ticker/price",
-        {"symbol": SYMBOL},
+            try:
+                async with session.get(
+                    url,
+                    params=params,
+                ) as response:
+                    response.raise_for_status()
+                    return await response.json()
+
+            except (
+                aiohttp.ClientError,
+                asyncio.TimeoutError,
+            ) as error:
+                last_error = error
+
+                logger.warning(
+                    "Binance request failed using %s: %s",
+                    base_url,
+                    error,
+                )
+
+    raise RuntimeError(
+        f"All Binance endpoints failed. Last error: {last_error}"
     )
 
-    return float(data["price"])
 
-
-async def get_24h_ticker() -> dict[str, Any]:
-    return await binance_request(
-        "/api/v3/ticker/24hr",
-        {"symbol": SYMBOL},
+async def get_ticker_data() -> dict[str, Any]:
+    data = await request_binance(
+        endpoint="/api/v3/ticker/24hr",
+        params={
+            "symbol": SYMBOL,
+        },
     )
+
+    return data
 
 
 async def get_klines(
-    interval: str = TIMEFRAME,
-    limit: int = CANDLE_LIMIT,
-) -> list[list[Any]]:
-    data = await binance_request(
-        "/api/v3/klines",
-        {
+    interval: str,
+    limit: int = 250,
+) -> list[dict[str, float | int]]:
+    raw_klines = await request_binance(
+        endpoint="/api/v3/klines",
+        params={
             "symbol": SYMBOL,
             "interval": interval,
             "limit": limit,
         },
     )
 
-    if not isinstance(data, list) or len(data) < 50:
-        raise ValueError("Binance returned insufficient candle data.")
+    candles: list[dict[str, float | int]] = []
 
-    return data
+    for item in raw_klines:
+        candle = {
+            "open_time": int(item[0]),
+            "open": float(item[1]),
+            "high": float(item[2]),
+            "low": float(item[3]),
+            "close": float(item[4]),
+            "volume": float(item[5]),
+            "close_time": int(item[6]),
+            "quote_volume": float(item[7]),
+            "trade_count": int(item[8]),
+            "taker_buy_volume": float(item[9]),
+            "taker_buy_quote_volume": float(item[10]),
+        }
+
+        candles.append(candle)
+
+    return candles
 
 
-# ---------------------------------------------------------
-# INDICATOR CALCULATIONS
-# ---------------------------------------------------------
-
-def calculate_ema(
-    values: list[float],
-    period: int,
-) -> float:
-    if len(values) < period:
-        raise ValueError(
-            f"Not enough values to calculate EMA {period}."
+async def get_all_timeframes() -> dict[str, list[dict[str, float | int]]]:
+    tasks = {
+        timeframe: asyncio.create_task(
+            get_klines(
+                interval=timeframe,
+                limit=250,
+            )
         )
-
-    multiplier = 2 / (period + 1)
-
-    ema_value = sum(values[:period]) / period
-
-    for value in values[period:]:
-        ema_value = (
-            value * multiplier
-            + ema_value * (1 - multiplier)
-        )
-
-    return ema_value
-
-
-def calculate_ema_series(
-    values: list[float],
-    period: int,
-) -> list[float]:
-    if len(values) < period:
-        raise ValueError(
-            f"Not enough values to calculate EMA series {period}."
-        )
-
-    multiplier = 2 / (period + 1)
-    ema_value = sum(values[:period]) / period
-
-    result = [ema_value]
-
-    for value in values[period:]:
-        ema_value = (
-            value * multiplier
-            + ema_value * (1 - multiplier)
-        )
-        result.append(ema_value)
-
-    return result
-
-
-def calculate_rsi(
-    values: list[float],
-    period: int = 14,
-) -> float:
-    if len(values) <= period:
-        raise ValueError("Not enough values to calculate RSI.")
-
-    changes = [
-        values[index] - values[index - 1]
-        for index in range(1, len(values))
-    ]
-
-    gains = [
-        max(change, 0.0)
-        for change in changes
-    ]
-
-    losses = [
-        abs(min(change, 0.0))
-        for change in changes
-    ]
-
-    average_gain = sum(gains[:period]) / period
-    average_loss = sum(losses[:period]) / period
-
-    for index in range(period, len(changes)):
-        average_gain = (
-            (average_gain * (period - 1)) + gains[index]
-        ) / period
-
-        average_loss = (
-            (average_loss * (period - 1)) + losses[index]
-        ) / period
-
-    if average_loss == 0:
-        return 100.0
-
-    relative_strength = average_gain / average_loss
-
-    return 100 - (100 / (1 + relative_strength))
-
-
-def calculate_macd(
-    values: list[float],
-) -> tuple[float, float, float]:
-    if len(values) < 50:
-        raise ValueError("Not enough values to calculate MACD.")
-
-    ema12_series = calculate_ema_series(values, 12)
-    ema26_series = calculate_ema_series(values, 26)
-
-    offset = len(ema12_series) - len(ema26_series)
-
-    aligned_ema12 = ema12_series[offset:]
-
-    macd_series = [
-        ema12 - ema26
-        for ema12, ema26 in zip(
-            aligned_ema12,
-            ema26_series,
-        )
-    ]
-
-    if len(macd_series) < 9:
-        raise ValueError(
-            "Not enough MACD values for signal line."
-        )
-
-    signal_line = calculate_ema(macd_series, 9)
-    macd_line = macd_series[-1]
-    histogram = macd_line - signal_line
-
-    return macd_line, signal_line, histogram
-
-
-def percent_difference(
-    first: float,
-    second: float,
-) -> float:
-    if second == 0:
-        return 0.0
-
-    return ((first - second) / second) * 100
-
-
-# ---------------------------------------------------------
-# MARKET ANALYSIS
-# ---------------------------------------------------------
-
-async def build_market_analysis() -> dict[str, Any]:
-    klines = await get_klines()
-
-    closes = [
-        float(candle[4])
-        for candle in klines
-    ]
-
-    highs = [
-        float(candle[2])
-        for candle in klines
-    ]
-
-    lows = [
-        float(candle[3])
-        for candle in klines
-    ]
-
-    volumes = [
-        float(candle[5])
-        for candle in klines
-    ]
-
-    current_price = closes[-1]
-
-    ema20 = calculate_ema(closes, 20)
-    ema50 = calculate_ema(closes, 50)
-    ema200 = calculate_ema(closes, 200)
-
-    rsi = calculate_rsi(closes, 14)
-
-    macd_line, macd_signal, macd_histogram = calculate_macd(
-        closes
-    )
-
-    recent_high = max(highs[-20:])
-    recent_low = min(lows[-20:])
-
-    previous_high = max(highs[-40:-20])
-    previous_low = min(lows[-40:-20])
-
-    average_volume = sum(volumes[-21:-1]) / 20
-    latest_volume = volumes[-1]
-
-    volume_ratio = (
-        latest_volume / average_volume
-        if average_volume > 0
-        else 0.0
-    )
-
-    score = 0
-    reasons: list[str] = []
-
-    if current_price > ema20:
-        score += 1
-        reasons.append("Price is above EMA 20")
-    else:
-        score -= 1
-        reasons.append("Price is below EMA 20")
-
-    if ema20 > ema50:
-        score += 1
-        reasons.append("EMA 20 is above EMA 50")
-    else:
-        score -= 1
-        reasons.append("EMA 20 is below EMA 50")
-
-    if ema50 > ema200:
-        score += 2
-        reasons.append("EMA 50 is above EMA 200")
-    else:
-        score -= 2
-        reasons.append("EMA 50 is below EMA 200")
-
-    if macd_line > macd_signal:
-        score += 1
-        reasons.append("MACD is above its signal line")
-    else:
-        score -= 1
-        reasons.append("MACD is below its signal line")
-
-    if macd_histogram > 0:
-        score += 1
-        reasons.append("MACD histogram is positive")
-    else:
-        score -= 1
-        reasons.append("MACD histogram is negative")
-
-    if 50 <= rsi <= 68:
-        score += 1
-        reasons.append("RSI supports bullish momentum")
-    elif 32 <= rsi < 50:
-        score -= 1
-        reasons.append("RSI shows weak momentum")
-    elif rsi > 72:
-        score -= 1
-        reasons.append("RSI may be overbought")
-    elif rsi < 28:
-        score += 1
-        reasons.append("RSI may be oversold")
-
-    if recent_high > previous_high:
-        score += 1
-        reasons.append("Recent structure made a higher high")
-    else:
-        score -= 1
-        reasons.append("Recent structure did not make a higher high")
-
-    if recent_low > previous_low:
-        score += 1
-        reasons.append("Recent structure made a higher low")
-    else:
-        score -= 1
-        reasons.append("Recent structure made a lower low")
-
-    if volume_ratio >= 1.5:
-        score += 1
-        reasons.append("Volume is significantly above average")
-
-    if score >= 6:
-        signal = "STRONG BUY"
-        signal_emoji = "🚀"
-    elif score >= 3:
-        signal = "BUY"
-        signal_emoji = "🟢"
-    elif score <= -6:
-        signal = "STRONG SELL"
-        signal_emoji = "🔻"
-    elif score <= -3:
-        signal = "SELL"
-        signal_emoji = "🔴"
-    else:
-        signal = "NEUTRAL"
-        signal_emoji = "🟡"
-
-    return {
-        "price": current_price,
-        "ema20": ema20,
-        "ema50": ema50,
-        "ema200": ema200,
-        "rsi": rsi,
-        "macd": macd_line,
-        "macd_signal": macd_signal,
-        "macd_histogram": macd_histogram,
-        "recent_high": recent_high,
-        "recent_low": recent_low,
-        "volume_ratio": volume_ratio,
-        "score": score,
-        "signal": signal,
-        "signal_emoji": signal_emoji,
-        "reasons": reasons,
-        "distance_ema20": percent_difference(
-            current_price,
-            ema20,
-        ),
-        "distance_ema50": percent_difference(
-            current_price,
-            ema50,
-        ),
-        "distance_ema200": percent_difference(
-            current_price,
-            ema200,
-        ),
+        for timeframe in TIMEFRAMES
     }
 
+    results: dict[str, list[dict[str, float | int]]] = {}
 
-# ---------------------------------------------------------
-# TELEGRAM COMMANDS
-# ---------------------------------------------------------
+    for timeframe, task in tasks.items():
+        results[timeframe] = await task
+
+    return results
+
+
+def calculate_candle_change(
+    candle: dict[str, float | int],
+) -> float:
+    open_price = float(candle["open"])
+    close_price = float(candle["close"])
+
+    if open_price == 0:
+        return 0.0
+
+    return ((close_price - open_price) / open_price) * 100
+
+
+def candle_direction(
+    candle: dict[str, float | int],
+) -> str:
+    open_price = float(candle["open"])
+    close_price = float(candle["close"])
+
+    if close_price > open_price:
+        return "🟢 Bullish"
+
+    if close_price < open_price:
+        return "🔴 Bearish"
+
+    return "🟡 Neutral"
+
 
 async def start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    user = update.effective_user
-    user_id = user.id if user else "Unknown"
+    if update.message is None:
+        return
 
-    await update.effective_message.reply_text(
+    user_id = update.effective_user.id
+
+    await update.message.reply_text(
         "✅ Jan SOL Signal Bot is online!\n\n"
         f"Your Telegram ID: {user_id}\n\n"
         "Available commands:\n"
-        "/price - Current Binance SOL price\n"
-        "/analysis - Full 15-minute analysis\n"
-        "/levels - Support and resistance levels\n"
-        "/status - Bot status\n"
-        "/help - Command list"
-    )
-
-
-async def help_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    await update.effective_message.reply_text(
-        "🤖 JAN SOL SIGNAL BOT\n\n"
-        "/price\n"
-        "Shows the live Binance SOL/USDT price and "
-        "24-hour market statistics.\n\n"
-        "/analysis\n"
-        "Calculates RSI, EMA 20, EMA 50, EMA 200, "
-        "MACD, volume and market structure.\n\n"
-        "/levels\n"
-        "Shows nearby support and resistance levels.\n\n"
-        "/status\n"
-        "Shows whether the bot is online."
+        "/price - Current SOL market data\n"
+        "/timeframes - Check all six timeframes\n"
+        "/status - Bot status\n\n"
+        "Indicator analysis will be added next."
     )
 
 
@@ -441,13 +194,16 @@ async def status(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    await update.effective_message.reply_text(
+    if update.message is None:
+        return
+
+    await update.message.reply_text(
         "🟢 Bot status: ONLINE\n"
         "📈 Market: SOL/USDT\n"
-        "🏦 Exchange data: Binance\n"
-        "🕯 Timeframe: 15 minutes\n"
-        "📡 Source: Binance public market API\n"
-        "🤖 Mode: Analysis and alerts\n"
+        "🏦 Exchange: Binance\n"
+        "📊 Data source: Binance public API\n"
+        "🕯 Timeframes: 5m, 15m, 1h, 4h, 8h, 1D\n"
+        "🤖 Mode: Alerts only\n"
         "🚫 Automatic trading: Disabled"
     )
 
@@ -456,25 +212,25 @@ async def price(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    message = await update.effective_message.reply_text(
-        "⏳ Retrieving Binance SOL market data..."
+    if update.message is None:
+        return
+
+    message = await update.message.reply_text(
+        "⏳ Retrieving SOL market data from Binance..."
     )
 
     try:
-        current_price, ticker = await asyncio.gather(
-            get_current_price(),
-            get_24h_ticker(),
-        )
+        ticker = await get_ticker_data()
 
+        current_price = float(ticker["lastPrice"])
         price_change_percent = float(
             ticker["priceChangePercent"]
         )
-
         high_price = float(ticker["highPrice"])
         low_price = float(ticker["lowPrice"])
         quote_volume = float(ticker["quoteVolume"])
 
-        direction_emoji = (
+        change_icon = (
             "🟢"
             if price_change_percent >= 0
             else "🔴"
@@ -483,7 +239,7 @@ async def price(
         await message.edit_text(
             "💰 SOL/USDT LIVE PRICE\n\n"
             f"Price: ${current_price:,.2f}\n"
-            f"{direction_emoji} 24h change: "
+            f"{change_icon} 24h change: "
             f"{price_change_percent:+.2f}%\n"
             f"⬆️ 24h high: ${high_price:,.2f}\n"
             f"⬇️ 24h low: ${low_price:,.2f}\n"
@@ -499,120 +255,84 @@ async def price(
         )
 
         await message.edit_text(
-            "⚠️ Binance price data could not be retrieved.\n\n"
-            f"Error: {type(error).__name__}\n"
+            "⚠️ I could not retrieve the SOL price right now.\n"
             "Please try again shortly."
         )
 
 
-async def analysis_command(
+async def timeframes(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    message = await update.effective_message.reply_text(
-        "🔍 Calculating Binance SOL analysis..."
+    if update.message is None:
+        return
+
+    message = await update.message.reply_text(
+        "⏳ Loading six SOL/USDT timeframes..."
     )
 
     try:
-        data = await build_market_analysis()
+        timeframe_data = await get_all_timeframes()
 
-        reasons_text = "\n".join(
-            f"• {reason}"
-            for reason in data["reasons"][:6]
+        lines = [
+            "📊 SOL/USDT MULTI-TIMEFRAME CHECK",
+            "",
+        ]
+
+        for timeframe, label in TIMEFRAMES.items():
+            candles = timeframe_data[timeframe]
+
+            if not candles:
+                lines.append(
+                    f"⚠️ {label}: No candle data"
+                )
+                continue
+
+            latest_candle = candles[-1]
+
+            close_price = float(
+                latest_candle["close"]
+            )
+
+            change_percent = calculate_candle_change(
+                latest_candle
+            )
+
+            direction = candle_direction(
+                latest_candle
+            )
+
+            lines.append(
+                f"{direction} | {label}\n"
+                f"Close: ${close_price:,.2f} | "
+                f"Candle: {change_percent:+.2f}%"
+            )
+
+        lines.extend(
+            [
+                "",
+                "✅ All timeframe feeds loaded",
+                "Source: Binance",
+                "",
+                "Next layer:",
+                "RSI, MACD, Williams %R, Stochastic RSI, "
+                "MFI, EMA, ATR, ADX, Bollinger Bands and VWAP.",
+            ]
         )
 
         await message.edit_text(
-            "📊 SOL/USDT PREMIUM ANALYSIS\n\n"
-            f"{data['signal_emoji']} Signal: "
-            f"{data['signal']}\n"
-            f"🎯 Signal score: {data['score']:+d}\n"
-            f"💰 Price: ${data['price']:,.2f}\n"
-            "🕯 Timeframe: 15 minutes\n\n"
-            "MOMENTUM\n"
-            f"RSI 14: {data['rsi']:.2f}\n"
-            f"MACD: {data['macd']:.4f}\n"
-            f"MACD signal: "
-            f"{data['macd_signal']:.4f}\n"
-            f"MACD histogram: "
-            f"{data['macd_histogram']:.4f}\n\n"
-            "TREND\n"
-            f"EMA 20: ${data['ema20']:,.2f} "
-            f"({data['distance_ema20']:+.2f}%)\n"
-            f"EMA 50: ${data['ema50']:,.2f} "
-            f"({data['distance_ema50']:+.2f}%)\n"
-            f"EMA 200: ${data['ema200']:,.2f} "
-            f"({data['distance_ema200']:+.2f}%)\n\n"
-            "MARKET STRUCTURE\n"
-            f"Resistance: ${data['recent_high']:,.2f}\n"
-            f"Support: ${data['recent_low']:,.2f}\n"
-            f"Volume ratio: {data['volume_ratio']:.2f}x\n\n"
-            "WHY\n"
-            f"{reasons_text}\n\n"
-            "Source: Binance market data\n"
-            "⚠️ Analysis only, not financial advice."
+            "\n".join(lines)
         )
 
     except Exception as error:
         logger.exception(
-            "Analysis request failed: %s",
+            "Timeframe request failed: %s",
             error,
         )
 
         await message.edit_text(
-            "⚠️ SOL analysis could not be calculated.\n\n"
-            f"Error: {type(error).__name__}\n"
-            "Please try again shortly."
-        )
-
-
-async def levels(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    message = await update.effective_message.reply_text(
-        "📐 Calculating SOL support and resistance..."
-    )
-
-    try:
-        data = await build_market_analysis()
-
-        current_price = data["price"]
-        resistance = data["recent_high"]
-        support = data["recent_low"]
-
-        upside = percent_difference(
-            resistance,
-            current_price,
-        )
-
-        downside = percent_difference(
-            support,
-            current_price,
-        )
-
-        await message.edit_text(
-            "📐 SOL/USDT LEVELS\n\n"
-            f"Current price: ${current_price:,.2f}\n\n"
-            f"🔺 Resistance: ${resistance:,.2f}\n"
-            f"Distance: {upside:+.2f}%\n\n"
-            f"🔻 Support: ${support:,.2f}\n"
-            f"Distance: {downside:+.2f}%\n\n"
-            f"EMA 20: ${data['ema20']:,.2f}\n"
-            f"EMA 50: ${data['ema50']:,.2f}\n"
-            f"EMA 200: ${data['ema200']:,.2f}\n\n"
-            "Calculated from Binance 15-minute candles."
-        )
-
-    except Exception as error:
-        logger.exception(
-            "Levels request failed: %s",
-            error,
-        )
-
-        await message.edit_text(
-            "⚠️ Support and resistance could not "
-            "be calculated.\n\n"
-            f"Error: {type(error).__name__}"
+            "⚠️ Multi-timeframe data could not be loaded.\n"
+            "Check the Railway deploy logs for the exact error."
         )
 
 
@@ -626,42 +346,20 @@ async def error_handler(
     )
 
 
-# ---------------------------------------------------------
-# BOT STARTUP
-# ---------------------------------------------------------
-
-async def post_init(
-    application: Application,
-) -> None:
-    await application.bot.delete_webhook(
-        drop_pending_updates=True
-    )
-
-    logger.info(
-        "Telegram webhook removed and polling prepared."
-    )
-
-
 def main() -> None:
     if not TELEGRAM_TOKEN:
         raise ValueError(
-            "TELEGRAM_BOT_TOKEN is missing from "
-            "Railway Variables."
+            "TELEGRAM_BOT_TOKEN is missing from Railway Variables."
         )
 
     application = (
         ApplicationBuilder()
         .token(TELEGRAM_TOKEN)
-        .post_init(post_init)
         .build()
     )
 
     application.add_handler(
         CommandHandler("start", start)
-    )
-
-    application.add_handler(
-        CommandHandler("help", help_command)
     )
 
     application.add_handler(
@@ -673,20 +371,19 @@ def main() -> None:
     )
 
     application.add_handler(
-        CommandHandler("analysis", analysis_command)
+        CommandHandler("timeframes", timeframes)
     )
 
-    application.add_handler(
-        CommandHandler("levels", levels)
+    application.add_error_handler(
+        error_handler
     )
 
-    application.add_error_handler(error_handler)
-
-    logger.info("Jan SOL Signal Bot started")
+    logger.info(
+        "Jan SOL Signal Bot started"
+    )
 
     application.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True,
+        drop_pending_updates=True
     )
 
 
