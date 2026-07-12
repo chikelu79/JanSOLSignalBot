@@ -7,8 +7,8 @@ from telegram.ext import (
 )
 
 # Railway Variables
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_TOKEN = "".join(os.getenv("TELEGRAM_BOT_TOKEN", "").split())
+TELEGRAM_CHAT_ID = "".join(os.getenv("TELEGRAM_CHAT_ID", "").split())
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
