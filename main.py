@@ -124,35 +124,36 @@ async def get_klines(
     return candles
 
 
-async def get_all_timeframes() -> dict[str, list[dict[str, float | int]]]:
-    tasks = {
-        timeframe: asyncio.create_task(
-            get_klines(
-                interval=timeframe,
-                limit=250,
-            )
+async def get_all_timeframes() -> dict[str, Any]:
+    tasks = [
+        get_klines(
+            interval=timeframe,
+            limit=250,
         )
         for timeframe in TIMEFRAMES
-    }
+    ]
 
-    results: dict[str, list[dict[str, float | int]]] = {}
+    responses = await asyncio.gather(
+        *tasks,
+        return_exceptions=True,
+    )
 
-    for timeframe, task in tasks.items():
-        results[timeframe] = await task
+    results: dict[str, Any] = {}
+
+    for timeframe, response in zip(
+        TIMEFRAMES.keys(),
+        responses,
+    ):
+        results[timeframe] = response
+
+        if isinstance(response, Exception):
+            logger.error(
+                "Timeframe %s failed: %s",
+                timeframe,
+                response,
+            )
 
     return results
-
-
-def calculate_candle_change(
-    candle: dict[str, float | int],
-) -> float:
-    open_price = float(candle["open"])
-    close_price = float(candle["close"])
-
-    if open_price == 0:
-        return 0.0
-
-    return ((close_price - open_price) / open_price) * 100
 
 
 def candle_direction(
@@ -268,7 +269,7 @@ async def timeframes(
         return
 
     message = await update.message.reply_text(
-        "⏳ Loading six SOL/USDT timeframes..."
+        "⏳ Loading SOL/USDT timeframes..."
     )
 
     try:
@@ -279,16 +280,33 @@ async def timeframes(
             "",
         ]
 
-        for timeframe, label in TIMEFRAMES.items():
-            candles = timeframe_data[timeframe]
+        successful_count = 0
+        failed_count = 0
 
-            if not candles:
+        for timeframe, label in TIMEFRAMES.items():
+            result = timeframe_data.get(timeframe)
+
+            if isinstance(result, Exception):
+                failed_count += 1
+
                 lines.append(
-                    f"⚠️ {label}: No candle data"
+                    f"⚠️ {label}: Data request failed"
                 )
+
                 continue
 
-            latest_candle = candles[-1]
+            if not result:
+                failed_count += 1
+
+                lines.append(
+                    f"⚠️ {label}: No candle data received"
+                )
+
+                continue
+
+            successful_count += 1
+
+            latest_candle = result[-1]
 
             close_price = float(
                 latest_candle["close"]
@@ -311,12 +329,9 @@ async def timeframes(
         lines.extend(
             [
                 "",
-                "✅ All timeframe feeds loaded",
+                f"✅ Loaded: {successful_count}",
+                f"⚠️ Failed: {failed_count}",
                 "Source: Binance",
-                "",
-                "Next layer:",
-                "RSI, MACD, Williams %R, Stochastic RSI, "
-                "MFI, EMA, ATR, ADX, Bollinger Bands and VWAP.",
             ]
         )
 
@@ -326,16 +341,14 @@ async def timeframes(
 
     except Exception as error:
         logger.exception(
-            "Timeframe request failed: %s",
+            "Timeframe command failed: %s",
             error,
         )
 
         await message.edit_text(
-            "⚠️ Multi-timeframe data could not be loaded.\n"
-            "Check the Railway deploy logs for the exact error."
+            "⚠️ The timeframe command encountered an error.\n"
+            "Please check the newest Railway deploy logs."
         )
-
-
 async def error_handler(
     update: object,
     context: ContextTypes.DEFAULT_TYPE,
