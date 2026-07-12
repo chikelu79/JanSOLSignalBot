@@ -1,10 +1,10 @@
 import asyncio
 import logging
 import os
+from contextlib import suppress
 from typing import Any
 
-import aiohttp
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -12,13 +12,63 @@ from telegram.ext import (
     ContextTypes,
 )
 
+import market
+from bot_state import (
+    add_to_watchlist,
+    get_runtime_chat_id,
+    get_selected_pair,
+    get_state_snapshot,
+    get_watchlist,
+    is_monitor_enabled,
+    remove_from_watchlist,
+    set_monitor_enabled,
+    set_runtime_chat_id,
+    set_selected_pair,
+    set_watchlist,
+)
+from notifier import (
+    build_scan_message,
+    evaluate_signal_alert,
+    price_text,
+)
+from strategy import (
+    MarketSignal,
+    build_market_signal,
+)
+
+
+# =========================================================
+# OPTIONAL MARKET CONTEXT
+# =========================================================
+
+try:
+    from market_context import (
+        MarketContext,
+        build_market_context,
+    )
+
+    MARKET_CONTEXT_AVAILABLE = True
+
+except ImportError:
+    MarketContext = Any
+    MARKET_CONTEXT_AVAILABLE = False
+
+    def build_market_context(
+        selected_signal: MarketSignal,
+        context_data: dict[str, Any],
+    ) -> None:
+        return None
+
 
 # =========================================================
 # LOGGING
 # =========================================================
 
 logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    format=(
+        "%(asctime)s | %(levelname)s | "
+        "%(name)s | %(message)s"
+    ),
     level=logging.INFO,
 )
 
@@ -26,665 +76,1375 @@ logger = logging.getLogger(__name__)
 
 
 # =========================================================
-# RAILWAY VARIABLES
+# ENVIRONMENT
 # =========================================================
 
-TELEGRAM_TOKEN = os.getenv(
-    "TELEGRAM_BOT_TOKEN",
-    "",
-).strip()
+# Removes accidental spaces, carriage returns and newlines.
+TELEGRAM_TOKEN = "".join(
+    os.getenv(
+        "TELEGRAM_BOT_TOKEN",
+        "",
+    ).split()
+)
 
-TELEGRAM_CHAT_ID = os.getenv(
+ENVIRONMENT_CHAT_ID = os.getenv(
     "TELEGRAM_CHAT_ID",
     "",
 ).strip()
 
-
-# =========================================================
-# BINANCE SETTINGS
-# =========================================================
-
-BINANCE_BASE_URL = "https://data-api.binance.vision"
-SYMBOL = "SOLUSDT"
-
-TIMEFRAMES = {
-    "5m": "5 minutes",
-    "15m": "15 minutes",
-    "1h": "1 hour",
-    "4h": "4 hours",
-    "8h": "8 hours",
-    "1d": "1 day",
-}
-
-
-# =========================================================
-# BINANCE REQUESTS
-# =========================================================
-
-async def binance_request(
-    endpoint: str,
-    params: dict[str, Any],
-) -> Any:
-    url = f"{BINANCE_BASE_URL}{endpoint}"
-
-    timeout = aiohttp.ClientTimeout(
-        total=25,
-        connect=10,
-        sock_read=20,
+MONITOR_INTERVAL_SECONDS = int(
+    os.getenv(
+        "MONITOR_INTERVAL_SECONDS",
+        "30",
     )
+)
 
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": "JanSOLSignalBot/1.0",
-    }
-
-    async with aiohttp.ClientSession(
-        timeout=timeout,
-        headers=headers,
-    ) as session:
-        async with session.get(
-            url,
-            params=params,
-        ) as response:
-            response_text = await response.text()
-
-            if response.status != 200:
-                raise RuntimeError(
-                    f"Binance HTTP {response.status}: "
-                    f"{response_text[:300]}"
-                )
-
-            try:
-                return await response.json()
-            except Exception as error:
-                raise RuntimeError(
-                    f"Invalid Binance response: "
-                    f"{response_text[:300]}"
-                ) from error
-
-
-async def get_ticker_24h() -> dict[str, Any]:
-    data = await binance_request(
-        "/api/v3/ticker/24hr",
-        {
-            "symbol": SYMBOL,
-        },
+INITIAL_MONITOR_DELAY_SECONDS = int(
+    os.getenv(
+        "INITIAL_MONITOR_DELAY_SECONDS",
+        "15",
     )
+)
 
-    if not isinstance(data, dict):
-        raise ValueError(
-            f"Unexpected ticker response: {data}"
+MAX_MONITORED_PAIRS = int(
+    os.getenv(
+        "MAX_MONITORED_PAIRS",
+        "8",
+    )
+)
+
+SCAN_CONCURRENCY = int(
+    os.getenv(
+        "SCAN_CONCURRENCY",
+        "2",
+    )
+)
+
+
+# =========================================================
+# TELEGRAM MESSAGE HELPERS
+# =========================================================
+
+TELEGRAM_MESSAGE_LIMIT = 3900
+
+
+async def send_long_message(
+    update: Update,
+    text: str,
+) -> None:
+    message = update.effective_message
+
+    if message is None:
+        return
+
+    remaining = text
+
+    while remaining:
+        if len(remaining) <= TELEGRAM_MESSAGE_LIMIT:
+            chunk = remaining
+            remaining = ""
+
+        else:
+            split_at = remaining.rfind(
+                "\n",
+                0,
+                TELEGRAM_MESSAGE_LIMIT,
+            )
+
+            if split_at <= 0:
+                split_at = TELEGRAM_MESSAGE_LIMIT
+
+            chunk = remaining[:split_at]
+            remaining = remaining[
+                split_at:
+            ].lstrip()
+
+        await message.reply_text(
+            chunk
         )
 
-    return data
 
-
-async def get_klines(
-    interval: str,
-    limit: int = 250,
-) -> list[dict[str, float | int]]:
-    raw_candles = await binance_request(
-        "/api/v3/klines",
-        {
-            "symbol": SYMBOL,
-            "interval": interval,
-            "limit": limit,
-        },
-    )
-
-    if not isinstance(raw_candles, list):
-        raise ValueError(
-            f"Unexpected candle response for {interval}: "
-            f"{raw_candles}"
-        )
-
-    candles: list[dict[str, float | int]] = []
-
-    for raw_candle in raw_candles:
-        if not isinstance(raw_candle, list):
-            continue
-
-        if len(raw_candle) < 7:
-            continue
-
+async def edit_or_reply(
+    update: Update,
+    waiting_message: Any,
+    text: str,
+) -> None:
+    if len(text) <= TELEGRAM_MESSAGE_LIMIT:
         try:
-            candle = {
-                "open_time": int(raw_candle[0]),
-                "open": float(raw_candle[1]),
-                "high": float(raw_candle[2]),
-                "low": float(raw_candle[3]),
-                "close": float(raw_candle[4]),
-                "volume": float(raw_candle[5]),
-                "close_time": int(raw_candle[6]),
-            }
+            await waiting_message.edit_text(
+                text
+            )
 
-            candles.append(candle)
+            return
 
-        except (TypeError, ValueError):
-            continue
+        except Exception:
+            logger.exception(
+                "Could not edit Telegram message."
+            )
 
-    if len(candles) < 30:
-        raise ValueError(
-            f"Only {len(candles)} usable candles received "
-            f"for {interval}."
-        )
+    try:
+        await waiting_message.delete()
 
-    return candles
+    except Exception:
+        pass
+
+    await send_long_message(
+        update,
+        text,
+    )
+
+
+def get_destination_chat_id() -> str:
+    runtime_chat_id = (
+        get_runtime_chat_id()
+    )
+
+    if runtime_chat_id:
+        return runtime_chat_id
+
+    return ENVIRONMENT_CHAT_ID
 
 
 # =========================================================
-# INDICATOR CALCULATIONS
+# MARKET COMPATIBILITY HELPERS
 # =========================================================
 
-def calculate_ema(
-    values: list[float],
-    period: int,
-) -> float | None:
-    if len(values) < period:
-        return None
-
-    multiplier = 2 / (period + 1)
-
-    ema = sum(values[:period]) / period
-
-    for value in values[period:]:
-        ema = (
-            value * multiplier
-            + ema * (1 - multiplier)
-        )
-
-    return ema
-
-
-def calculate_rsi(
-    values: list[float],
-    period: int = 14,
-) -> float | None:
-    if len(values) <= period:
-        return None
-
-    changes = [
-        values[index] - values[index - 1]
-        for index in range(1, len(values))
-    ]
-
-    gains = [
-        max(change, 0)
-        for change in changes
-    ]
-
-    losses = [
-        abs(min(change, 0))
-        for change in changes
-    ]
-
-    average_gain = (
-        sum(gains[:period]) / period
+async def validate_market_symbol(
+    symbol: str,
+) -> None:
+    validator = getattr(
+        market,
+        "validate_symbol",
+        None,
     )
 
-    average_loss = (
-        sum(losses[:period]) / period
-    )
+    if validator is None:
+        return
 
-    for index in range(
-        period,
-        len(changes),
-    ):
-        average_gain = (
-            average_gain * (period - 1)
-            + gains[index]
-        ) / period
-
-        average_loss = (
-            average_loss * (period - 1)
-            + losses[index]
-        ) / period
-
-    if average_loss == 0:
-        return 100.0
-
-    relative_strength = (
-        average_gain / average_loss
-    )
-
-    return 100 - (
-        100 / (1 + relative_strength)
+    await validator(
+        symbol
     )
 
 
-def determine_trend(
-    current_price: float,
-    ema20: float | None,
-    ema50: float | None,
-    ema200: float | None,
-    rsi: float | None,
-) -> tuple[str, str]:
-    bullish_points = 0
-    bearish_points = 0
-
-    if ema20 is not None:
-        if current_price > ema20:
-            bullish_points += 1
-        else:
-            bearish_points += 1
-
-    if ema50 is not None:
-        if current_price > ema50:
-            bullish_points += 1
-        else:
-            bearish_points += 1
-
-    if ema200 is not None:
-        if current_price > ema200:
-            bullish_points += 1
-        else:
-            bearish_points += 1
-
-    if (
-        ema20 is not None
-        and ema50 is not None
-    ):
-        if ema20 > ema50:
-            bullish_points += 1
-        else:
-            bearish_points += 1
-
-    if rsi is not None:
-        if rsi >= 55:
-            bullish_points += 1
-        elif rsi <= 45:
-            bearish_points += 1
-
-    if bullish_points >= bearish_points + 2:
-        return "BULLISH", "🟢"
-
-    if bearish_points >= bullish_points + 2:
-        return "BEARISH", "🔴"
-
-    return "NEUTRAL", "🟡"
-
-
-def format_number(
-    value: float | None,
-    decimals: int = 2,
-) -> str:
-    if value is None:
-        return "N/A"
-
-    return f"{value:,.{decimals}f}"
-
-
-def analyze_candles(
-    candles: list[dict[str, float | int]],
+async def fetch_ticker(
+    symbol: str,
 ) -> dict[str, Any]:
-    closes = [
-        float(candle["close"])
-        for candle in candles
-    ]
-
-    highs = [
-        float(candle["high"])
-        for candle in candles
-    ]
-
-    lows = [
-        float(candle["low"])
-        for candle in candles
-    ]
-
-    current_price = closes[-1]
-
-    ema20 = calculate_ema(
-        closes,
-        20,
+    ticker_function = getattr(
+        market,
+        "get_ticker_24h",
+        None,
     )
 
-    ema50 = calculate_ema(
-        closes,
-        50,
+    if ticker_function is None:
+        raise RuntimeError(
+            "market.py does not contain "
+            "get_ticker_24h()."
+        )
+
+    try:
+        return await ticker_function(
+            symbol
+        )
+
+    except TypeError:
+        # Compatibility with an older hardcoded market.py.
+        return await ticker_function()
+
+
+async def fetch_symbol_snapshot(
+    symbol: str,
+) -> dict[str, Any]:
+    snapshot_function = getattr(
+        market,
+        "get_symbol_snapshot",
+        None,
     )
 
-    ema200 = calculate_ema(
-        closes,
-        200,
+    if snapshot_function is not None:
+        return await snapshot_function(
+            symbol
+        )
+
+    legacy_snapshot_function = getattr(
+        market,
+        "get_market_snapshot",
+        None,
     )
 
-    rsi = calculate_rsi(
-        closes,
-        14,
+    if legacy_snapshot_function is not None:
+        try:
+            result = await legacy_snapshot_function(
+                symbol
+            )
+
+        except TypeError:
+            result = await legacy_snapshot_function()
+
+        if isinstance(
+            result,
+            dict,
+        ):
+            result.setdefault(
+                "symbol",
+                symbol,
+            )
+
+            return result
+
+    timeframe_function = getattr(
+        market,
+        "get_all_timeframes",
+        None,
     )
 
-    trend, trend_emoji = determine_trend(
-        current_price=current_price,
-        ema20=ema20,
-        ema50=ema50,
-        ema200=ema200,
-        rsi=rsi,
+    if timeframe_function is None:
+        raise RuntimeError(
+            "market.py does not contain a usable "
+            "snapshot or timeframe function."
+        )
+
+    try:
+        candles, errors = (
+            await timeframe_function(
+                symbol
+            )
+        )
+
+    except TypeError:
+        candles, errors = (
+            await timeframe_function()
+        )
+
+    ticker = await fetch_ticker(
+        symbol
     )
-
-    recent_highs = highs[-50:]
-    recent_lows = lows[-50:]
-
-    resistance = max(recent_highs)
-    support = min(recent_lows)
 
     return {
-        "price": current_price,
-        "ema20": ema20,
-        "ema50": ema50,
-        "ema200": ema200,
-        "rsi": rsi,
-        "trend": trend,
-        "trend_emoji": trend_emoji,
-        "support": support,
-        "resistance": resistance,
+        "symbol": symbol,
+        "ticker": ticker,
+        "candles": candles,
+        "errors": errors,
     }
 
 
-# =========================================================
-# TELEGRAM COMMANDS
-# =========================================================
-
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    if update.message is None:
-        return
-
-    user_id = (
-        update.effective_user.id
-        if update.effective_user
-        else "Unknown"
+async def fetch_context_data(
+    symbol: str,
+) -> dict[str, Any] | None:
+    context_function = getattr(
+        market,
+        "get_market_context_data",
+        None,
     )
 
-    await update.message.reply_text(
-        "✅ Jan SOL Signal Bot is online!\n\n"
-        f"Your Telegram ID: {user_id}\n\n"
-        "Available commands:\n"
-        "/price - Live SOL price and 24-hour data\n"
-        "/levels - Support, resistance and EMAs\n"
-        "/timeframes - Check all six timeframes\n"
-        "/status - Bot status"
-    )
+    if context_function is None:
+        return None
 
-
-async def status(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    if update.message is None:
-        return
-
-    await update.message.reply_text(
-        "🟢 Bot status: ONLINE\n"
-        "📈 Market: SOL/USDT\n"
-        "🏦 Exchange: Binance\n"
-        "🕯 Timeframes: 5m, 15m, 1h, 4h, 8h, 1d\n"
-        "🤖 Mode: Alerts only\n"
-        "🚫 Automatic trading: Disabled"
-    )
-
-
-async def price(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    if update.message is None:
-        return
-
-    loading_message = (
-        await update.message.reply_text(
-            "⏳ Retrieving SOL price from Binance..."
+    try:
+        return await context_function(
+            symbol
         )
+
+    except Exception:
+        logger.exception(
+            "Macro market data failed for %s.",
+            symbol,
+        )
+
+        return None
+
+
+# =========================================================
+# ANALYSIS ENGINE
+# =========================================================
+
+async def analyze_symbol(
+    symbol: str,
+    include_context: bool = True,
+) -> tuple[
+    MarketSignal,
+    Any | None,
+    dict[str, Any],
+]:
+    snapshot = await fetch_symbol_snapshot(
+        symbol
+    )
+
+    candles = snapshot.get(
+        "candles",
+        {},
+    )
+
+    errors = snapshot.get(
+        "errors",
+        {},
+    )
+
+    if not candles:
+        raise RuntimeError(
+            f"No candle data were returned for {symbol}."
+        )
+
+    signal = await asyncio.to_thread(
+        build_market_signal,
+        symbol,
+        candles,
+        errors,
+    )
+
+    market_context = None
+
+    if (
+        include_context
+        and MARKET_CONTEXT_AVAILABLE
+    ):
+        context_data = await fetch_context_data(
+            symbol
+        )
+
+        if context_data:
+            market_context = (
+                await asyncio.to_thread(
+                    build_market_context,
+                    signal,
+                    context_data,
+                )
+            )
+
+    return (
+        signal,
+        market_context,
+        snapshot,
+    )
+
+
+def adjusted_score(
+    signal: MarketSignal,
+    market_context: Any | None,
+) -> float:
+    if market_context is None:
+        return float(
+            signal.score
+        )
+
+    return float(
+        getattr(
+            market_context,
+            "adjusted_score",
+            signal.score,
+        )
+    )
+
+
+# =========================================================
+# COMMANDS
+# =========================================================
+
+async def start_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat is not None:
+        set_runtime_chat_id(
+            chat.id
+        )
+
+    selected_pair = (
+        get_selected_pair()
+    )
+
+    user_name = (
+        user.first_name
+        if user is not None
+        else "Jan"
+    )
+
+    text = (
+        f"✅ Jan Crypto Signal Bot is online, "
+        f"{user_name}.\n\n"
+        f"Selected pair: {selected_pair}\n"
+        f"Automatic monitoring: "
+        f"{'ON' if is_monitor_enabled() else 'OFF'}\n"
+        f"Scan interval: "
+        f"{MONITOR_INTERVAL_SECONDS} seconds\n\n"
+        "Commands:\n"
+        "/price - Current selected-pair price\n"
+        "/scan - Full multi-timeframe scan\n"
+        "/analysis - Same as /scan\n"
+        "/timeframes - Compact timeframe view\n"
+        "/pair BTCUSDT - Change selected pair\n"
+        "/watch SOL ETH BTC - Replace watchlist\n"
+        "/addwatch XRP - Add a pair\n"
+        "/removewatch XRP - Remove a pair\n"
+        "/watchlist - Show monitored pairs\n"
+        "/market - BTC, dominance and VIX context\n"
+        "/monitor on - Enable automatic alerts\n"
+        "/monitor off - Disable automatic alerts\n"
+        "/status - Bot and monitor status"
+    )
+
+    await send_long_message(
+        update,
+        text,
+    )
+
+
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    await start_command(
+        update,
+        context,
+    )
+
+
+async def status_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    state = get_state_snapshot()
+
+    watchlist = ", ".join(
+        state["watchlist"]
+    )
+
+    text = (
+        "🟢 BOT STATUS: ONLINE\n\n"
+        f"Selected pair: "
+        f"{state['selected_pair']}\n"
+        f"Monitor: "
+        f"{'ON' if state['monitor_enabled'] else 'OFF'}\n"
+        f"Interval: "
+        f"{MONITOR_INTERVAL_SECONDS} seconds\n"
+        f"Market source: Binance\n"
+        f"Timeframes: 5m, 15m, 1h, 4h, 8h, 1d\n"
+        f"Macro context module: "
+        f"{'AVAILABLE' if MARKET_CONTEXT_AVAILABLE else 'NOT INSTALLED'}\n"
+        f"Telegram destination: "
+        f"{get_destination_chat_id() or 'Not registered'}\n\n"
+        f"Watchlist:\n{watchlist}\n\n"
+        "Automatic trading: DISABLED\n"
+        "Mode: Analysis and alerts only"
+    )
+
+    await send_long_message(
+        update,
+        text,
+    )
+
+
+async def price_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    symbol = get_selected_pair()
+
+    waiting = await update.effective_message.reply_text(
+        f"⏳ Retrieving {symbol} price..."
     )
 
     try:
-        ticker = await get_ticker_24h()
-
-        current_price = float(
-            ticker["lastPrice"]
+        ticker = await fetch_ticker(
+            symbol
         )
 
-        price_change_percent = float(
-            ticker["priceChangePercent"]
+        price = float(
+            ticker.get(
+                "lastPrice",
+                0,
+            )
         )
 
-        high_price = float(
-            ticker["highPrice"]
+        change = float(
+            ticker.get(
+                "priceChangePercent",
+                0,
+            )
         )
 
-        low_price = float(
-            ticker["lowPrice"]
+        high = float(
+            ticker.get(
+                "highPrice",
+                0,
+            )
         )
 
-        quote_volume = float(
-            ticker["quoteVolume"]
+        low = float(
+            ticker.get(
+                "lowPrice",
+                0,
+            )
         )
 
-        change_emoji = (
-            "🟢"
-            if price_change_percent >= 0
-            else "🔴"
+        volume = float(
+            ticker.get(
+                "quoteVolume",
+                0,
+            )
         )
 
-        await loading_message.edit_text(
-            "💰 SOL/USDT LIVE PRICE\n\n"
-            f"Price: ${current_price:,.2f}\n"
-            f"{change_emoji} 24h change: "
-            f"{price_change_percent:+.2f}%\n"
-            f"⬆️ 24h high: ${high_price:,.2f}\n"
-            f"⬇️ 24h low: ${low_price:,.2f}\n"
-            f"💵 24h volume: ${quote_volume:,.0f}\n\n"
-            "Source: Binance\n"
-            "Public market data"
+        text = (
+            f"💰 {symbol}\n\n"
+            f"Price: {price_text(price)}\n"
+            f"24h change: {change:+.2f}%\n"
+            f"24h high: {price_text(high)}\n"
+            f"24h low: {price_text(low)}\n"
+            f"Quote volume: "
+            f"${volume:,.0f}\n\n"
+            "Source: Binance Spot"
+        )
+
+        await waiting.edit_text(
+            text
         )
 
     except Exception as error:
         logger.exception(
-            "Price request failed: %s",
-            error,
+            "Price command failed for %s.",
+            symbol,
         )
 
-        await loading_message.edit_text(
-            "⚠️ I could not retrieve the SOL price.\n\n"
-            f"Error: {type(error).__name__}\n"
-            "Check the Railway deploy log."
-        )
-
-
-async def levels(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    if update.message is None:
-        return
-
-    loading_message = (
-        await update.message.reply_text(
-            "⏳ Calculating SOL support and resistance..."
-        )
-    )
-
-    try:
-        candles = await get_klines(
-            interval="15m",
-            limit=250,
-        )
-
-        result = analyze_candles(
-            candles
-        )
-
-        price_value = float(
-            result["price"]
-        )
-
-        resistance = float(
-            result["resistance"]
-        )
-
-        support = float(
-            result["support"]
-        )
-
-        resistance_distance = (
-            (resistance - price_value)
-            / price_value
-            * 100
-        )
-
-        support_distance = (
-            (support - price_value)
-            / price_value
-            * 100
-        )
-
-        await loading_message.edit_text(
-            "📊 SOL/USDT LEVELS\n\n"
-            f"💰 Price: ${price_value:,.2f}\n\n"
-            f"🔺 Resistance: ${resistance:,.2f}\n"
-            f"Distance: {resistance_distance:+.2f}%\n\n"
-            f"🔻 Support: ${support:,.2f}\n"
-            f"Distance: {support_distance:+.2f}%\n\n"
-            f"EMA 20: ${format_number(result['ema20'])}\n"
-            f"EMA 50: ${format_number(result['ema50'])}\n"
-            f"EMA 200: ${format_number(result['ema200'])}\n"
-            f"RSI 14: {format_number(result['rsi'])}\n\n"
-            "Calculated from Binance 15-minute candles."
-        )
-
-    except Exception as error:
-        logger.exception(
-            "Levels request failed: %s",
-            error,
-        )
-
-        await loading_message.edit_text(
-            "⚠️ SOL levels could not be calculated.\n\n"
+        await waiting.edit_text(
+            f"⚠️ Could not retrieve {symbol} price.\n\n"
             f"Error: {type(error).__name__}: {error}"
         )
 
 
-async def timeframes(
+async def scan_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    if update.message is None:
+    symbol = get_selected_pair()
+
+    waiting = await update.effective_message.reply_text(
+        f"🔍 Scanning {symbol} across "
+        "5m, 15m, 1h, 4h, 8h and daily..."
+    )
+
+    try:
+        signal, macro_context, _ = (
+            await analyze_symbol(
+                symbol,
+                include_context=True,
+            )
+        )
+
+        message = build_scan_message(
+            signal,
+            macro_context,
+        )
+
+        await edit_or_reply(
+            update,
+            waiting,
+            message,
+        )
+
+    except Exception as error:
+        logger.exception(
+            "Scan failed for %s.",
+            symbol,
+        )
+
+        await waiting.edit_text(
+            f"⚠️ The {symbol} scan failed.\n\n"
+            f"Error: {type(error).__name__}: {error}"
+        )
+
+
+async def analysis_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    await scan_command(
+        update,
+        context,
+    )
+
+
+async def timeframes_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    symbol = get_selected_pair()
+
+    waiting = await update.effective_message.reply_text(
+        f"⏳ Reading {symbol} timeframes..."
+    )
+
+    try:
+        signal, _, _ = await analyze_symbol(
+            symbol,
+            include_context=False,
+        )
+
+        lines = [
+            f"📊 {symbol} TIMEFRAMES",
+            "",
+            f"Combined score: {signal.score:+.1f}",
+            f"Direction: {signal.direction}",
+            "",
+        ]
+
+        for interval in [
+            "5m",
+            "15m",
+            "1h",
+            "4h",
+            "8h",
+            "1d",
+        ]:
+            analysis = signal.analyses.get(
+                interval
+            )
+
+            if analysis is None:
+                lines.append(
+                    f"⚠️ {interval}: unavailable"
+                )
+
+                continue
+
+            lines.append(
+                f"{interval}: "
+                f"{analysis.direction} "
+                f"({analysis.score:+.0f}) | "
+                f"RSI {analysis.rsi:.1f} | "
+                f"ADX {analysis.adx:.1f} | "
+                f"RVOL {analysis.relative_volume:.2f}x"
+            )
+
+        await waiting.edit_text(
+            "\n".join(
+                lines
+            )
+        )
+
+    except Exception as error:
+        logger.exception(
+            "Timeframe command failed."
+        )
+
+        await waiting.edit_text(
+            f"⚠️ Timeframe analysis failed.\n\n"
+            f"Error: {type(error).__name__}: {error}"
+        )
+
+
+async def pair_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not context.args:
+        await update.effective_message.reply_text(
+            "Current pair: "
+            f"{get_selected_pair()}\n\n"
+            "Example:\n"
+            "/pair BTCUSDT\n"
+            "/pair ETH\n"
+            "/pair XRP"
+        )
+
         return
 
-    loading_message = (
-        await update.message.reply_text(
-            "⏳ Loading six Binance timeframes..."
+    raw_symbol = context.args[0]
+
+    # bot_state normalizes ETH into ETHUSDT, etc.
+    from bot_state import normalize_symbol
+
+    try:
+        symbol = normalize_symbol(
+            raw_symbol
+        )
+
+        waiting = (
+            await update.effective_message.reply_text(
+                f"⏳ Checking {symbol} on Binance..."
+            )
+        )
+
+        await validate_market_symbol(
+            symbol
+        )
+
+        set_selected_pair(
+            symbol
+        )
+
+        add_to_watchlist(
+            symbol
+        )
+
+        await waiting.edit_text(
+            f"✅ Selected pair changed to {symbol}.\n\n"
+            "Use /price or /scan now."
+        )
+
+    except Exception as error:
+        logger.exception(
+            "Pair change failed."
+        )
+
+        await update.effective_message.reply_text(
+            f"⚠️ Could not select that pair.\n\n"
+            f"Error: {type(error).__name__}: {error}"
+        )
+
+
+async def watch_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not context.args:
+        await update.effective_message.reply_text(
+            "Usage:\n"
+            "/watch BTC ETH SOL XRP\n\n"
+            "This replaces the current watchlist."
+        )
+
+        return
+
+    from bot_state import normalize_symbol
+
+    try:
+        symbols = [
+            normalize_symbol(
+                value
+            )
+            for value in context.args
+        ]
+
+        symbols = symbols[
+            :MAX_MONITORED_PAIRS
+        ]
+
+        waiting = (
+            await update.effective_message.reply_text(
+                "⏳ Validating watchlist..."
+            )
+        )
+
+        validations = await asyncio.gather(
+            *[
+                validate_market_symbol(
+                    symbol
+                )
+                for symbol in symbols
+            ],
+            return_exceptions=True,
+        )
+
+        valid_symbols: list[str] = []
+        invalid_symbols: list[str] = []
+
+        for symbol, result in zip(
+            symbols,
+            validations,
+        ):
+            if isinstance(
+                result,
+                Exception,
+            ):
+                invalid_symbols.append(
+                    symbol
+                )
+            else:
+                valid_symbols.append(
+                    symbol
+                )
+
+        if not valid_symbols:
+            raise ValueError(
+                "None of the supplied pairs were valid."
+            )
+
+        set_watchlist(
+            valid_symbols
+        )
+
+        text = (
+            "✅ Watchlist updated:\n"
+            + "\n".join(
+                f"• {symbol}"
+                for symbol in valid_symbols
+            )
+        )
+
+        if invalid_symbols:
+            text += (
+                "\n\nSkipped:\n"
+                + "\n".join(
+                    f"• {symbol}"
+                    for symbol in invalid_symbols
+                )
+            )
+
+        await waiting.edit_text(
+            text
+        )
+
+    except Exception as error:
+        logger.exception(
+            "Watchlist update failed."
+        )
+
+        await update.effective_message.reply_text(
+            f"⚠️ Watchlist update failed.\n\n"
+            f"Error: {type(error).__name__}: {error}"
+        )
+
+
+async def addwatch_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not context.args:
+        await update.effective_message.reply_text(
+            "Usage: /addwatch SUI"
+        )
+
+        return
+
+    from bot_state import normalize_symbol
+
+    try:
+        symbol = normalize_symbol(
+            context.args[0]
+        )
+
+        await validate_market_symbol(
+            symbol
+        )
+
+        watchlist = add_to_watchlist(
+            symbol
+        )
+
+        await update.effective_message.reply_text(
+            f"✅ {symbol} added.\n\n"
+            f"Watchlist: {', '.join(watchlist)}"
+        )
+
+    except Exception as error:
+        await update.effective_message.reply_text(
+            f"⚠️ Could not add pair.\n\n"
+            f"Error: {type(error).__name__}: {error}"
+        )
+
+
+async def removewatch_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not context.args:
+        await update.effective_message.reply_text(
+            "Usage: /removewatch DOGE"
+        )
+
+        return
+
+    try:
+        watchlist = remove_from_watchlist(
+            context.args[0]
+        )
+
+        await update.effective_message.reply_text(
+            "✅ Pair removed.\n\n"
+            f"Watchlist: {', '.join(watchlist)}"
+        )
+
+    except Exception as error:
+        await update.effective_message.reply_text(
+            f"⚠️ Could not remove pair.\n\n"
+            f"Error: {type(error).__name__}: {error}"
+        )
+
+
+async def watchlist_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    watchlist = get_watchlist()
+
+    text = (
+        "👁 CURRENT WATCHLIST\n\n"
+        + "\n".join(
+            f"{index}. {symbol}"
+            for index, symbol in enumerate(
+                watchlist,
+                start=1,
+            )
+        )
+        + f"\n\nSelected: {get_selected_pair()}"
+    )
+
+    await update.effective_message.reply_text(
+        text
+    )
+
+
+async def monitor_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not context.args:
+        await update.effective_message.reply_text(
+            "Monitor is currently "
+            f"{'ON' if is_monitor_enabled() else 'OFF'}.\n\n"
+            "Use:\n"
+            "/monitor on\n"
+            "/monitor off"
+        )
+
+        return
+
+    choice = context.args[0].lower()
+
+    if choice in {
+        "on",
+        "start",
+        "enable",
+    }:
+        set_monitor_enabled(
+            True
+        )
+
+        if update.effective_chat is not None:
+            set_runtime_chat_id(
+                update.effective_chat.id
+            )
+
+        await update.effective_message.reply_text(
+            "✅ Automatic monitoring enabled."
+        )
+
+        return
+
+    if choice in {
+        "off",
+        "stop",
+        "disable",
+    }:
+        set_monitor_enabled(
+            False
+        )
+
+        await update.effective_message.reply_text(
+            "⏸ Automatic monitoring disabled."
+        )
+
+        return
+
+    await update.effective_message.reply_text(
+        "Use /monitor on or /monitor off."
+    )
+
+
+async def market_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    symbol = get_selected_pair()
+
+    waiting = await update.effective_message.reply_text(
+        "🌍 Loading global market context..."
+    )
+
+    if not MARKET_CONTEXT_AVAILABLE:
+        await waiting.edit_text(
+            "⚠️ market_context.py is not installed yet.\n\n"
+            "Technical scans still work normally."
+        )
+
+        return
+
+    try:
+        signal, macro_context, _ = (
+            await analyze_symbol(
+                symbol,
+                include_context=True,
+            )
+        )
+
+        if macro_context is None:
+            raise RuntimeError(
+                "The macro provider returned no context."
+            )
+
+        lines = [
+            "🌍 GLOBAL MARKET CONTEXT",
+            "",
+            f"Selected pair: {symbol}",
+            f"Technical score: {signal.score:+.1f}",
+            (
+                "Adjusted score: "
+                f"{macro_context.adjusted_score:+.1f}"
+            ),
+            (
+                "Macro adjustment: "
+                f"{macro_context.score_adjustment:+.1f}"
+            ),
+            "",
+            (
+                f"BTC: {macro_context.btc_direction} "
+                f"({macro_context.btc_score:+.1f})"
+            ),
+            (
+                f"ETH: {macro_context.eth_direction} "
+                f"({macro_context.eth_score:+.1f})"
+            ),
+            (
+                "BTC correlation: "
+                f"{macro_context.btc_correlation:.2f} "
+                f"({macro_context.correlation_strength})"
+            ),
+            (
+                "BTC dominance: "
+                f"{macro_context.btc_dominance:.2f}% "
+                f"({macro_context.btc_dominance_effect})"
+            ),
+            (
+                "Crypto market 24h: "
+                f"{macro_context.crypto_market_change_24h:+.2f}%"
+            ),
+            (
+                f"VIX: {macro_context.vix_value:.2f} "
+                f"({macro_context.vix_regime})"
+            ),
+        ]
+
+        if macro_context.reasons:
+            lines.extend(
+                [
+                    "",
+                    "SUPPORTING FACTORS",
+                    *[
+                        f"• {reason}"
+                        for reason
+                        in macro_context.reasons[:6]
+                    ],
+                ]
+            )
+
+        if macro_context.warnings:
+            lines.extend(
+                [
+                    "",
+                    "RISKS",
+                    *[
+                        f"• {warning}"
+                        for warning
+                        in macro_context.warnings[:6]
+                    ],
+                ]
+            )
+
+        await edit_or_reply(
+            update,
+            waiting,
+            "\n".join(
+                lines
+            ),
+        )
+
+    except Exception as error:
+        logger.exception(
+            "Market-context command failed."
+        )
+
+        await waiting.edit_text(
+            "⚠️ Global market context failed.\n\n"
+            f"Error: {type(error).__name__}: {error}"
+        )
+
+
+# =========================================================
+# AUTOMATIC WATCHLIST MONITOR
+# =========================================================
+
+async def monitor_one_symbol(
+    application: Application,
+    symbol: str,
+    semaphore: asyncio.Semaphore,
+) -> tuple[str, float] | None:
+    async with semaphore:
+        try:
+            # Technical scan first. Macro data are only loaded
+            # when a setup is strong enough to matter.
+            signal, _, _ = await analyze_symbol(
+                symbol,
+                include_context=False,
+            )
+
+            macro_context = None
+
+            if abs(
+                signal.score
+            ) >= 50:
+                try:
+                    _, macro_context, _ = (
+                        await analyze_symbol(
+                            symbol,
+                            include_context=True,
+                        )
+                    )
+
+                except Exception:
+                    logger.exception(
+                        "Context enrichment failed "
+                        "for %s.",
+                        symbol,
+                    )
+
+            decision = evaluate_signal_alert(
+                signal,
+                macro_context,
+            )
+
+            if decision.should_send:
+                destination = (
+                    get_destination_chat_id()
+                )
+
+                if destination:
+                    await application.bot.send_message(
+                        chat_id=destination,
+                        text=decision.message[
+                            :TELEGRAM_MESSAGE_LIMIT
+                        ],
+                    )
+
+                    logger.info(
+                        "Sent %s alert for %s: %s",
+                        decision.alert_type,
+                        symbol,
+                        decision.reason,
+                    )
+
+                else:
+                    logger.warning(
+                        "Alert generated for %s, "
+                        "but no Telegram chat ID "
+                        "is registered.",
+                        symbol,
+                    )
+
+            return (
+                symbol,
+                adjusted_score(
+                    signal,
+                    macro_context,
+                ),
+            )
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception:
+            logger.exception(
+                "Automatic scan failed for %s.",
+                symbol,
+            )
+
+            return None
+
+
+async def monitor_loop(
+    application: Application,
+) -> None:
+    await asyncio.sleep(
+        INITIAL_MONITOR_DELAY_SECONDS
+    )
+
+    semaphore = asyncio.Semaphore(
+        max(
+            1,
+            SCAN_CONCURRENCY,
         )
     )
 
-    report_lines = [
-        "📊 SOL/USDT MULTI-TIMEFRAME CHECK",
-        "",
+    logger.info(
+        "Automatic market monitor started."
+    )
+
+    while True:
+        try:
+            if is_monitor_enabled():
+                watchlist = get_watchlist()[
+                    :MAX_MONITORED_PAIRS
+                ]
+
+                tasks = [
+                    monitor_one_symbol(
+                        application,
+                        symbol,
+                        semaphore,
+                    )
+                    for symbol in watchlist
+                ]
+
+                results = await asyncio.gather(
+                    *tasks,
+                    return_exceptions=True,
+                )
+
+                ranked = [
+                    result
+                    for result in results
+                    if (
+                        isinstance(
+                            result,
+                            tuple,
+                        )
+                        and len(result) == 2
+                    )
+                ]
+
+                ranked.sort(
+                    key=lambda item: abs(
+                        item[1]
+                    ),
+                    reverse=True,
+                )
+
+                if ranked:
+                    logger.info(
+                        "Scan cycle completed. "
+                        "Top setup: %s %.1f",
+                        ranked[0][0],
+                        ranked[0][1],
+                    )
+
+            await asyncio.sleep(
+                max(
+                    15,
+                    MONITOR_INTERVAL_SECONDS,
+                )
+            )
+
+        except asyncio.CancelledError:
+            logger.info(
+                "Automatic monitor stopped."
+            )
+
+            raise
+
+        except Exception:
+            logger.exception(
+                "Monitor loop encountered an error."
+            )
+
+            await asyncio.sleep(
+                15
+            )
+
+
+# =========================================================
+# APPLICATION LIFECYCLE
+# =========================================================
+
+async def post_init(
+    application: Application,
+) -> None:
+    commands = [
+        BotCommand(
+            "start",
+            "Start and register the bot",
+        ),
+        BotCommand(
+            "price",
+            "Current selected-pair price",
+        ),
+        BotCommand(
+            "scan",
+            "Run full market analysis",
+        ),
+        BotCommand(
+            "analysis",
+            "Run full market analysis",
+        ),
+        BotCommand(
+            "timeframes",
+            "Show all timeframe scores",
+        ),
+        BotCommand(
+            "pair",
+            "Change selected pair",
+        ),
+        BotCommand(
+            "watch",
+            "Replace watchlist",
+        ),
+        BotCommand(
+            "watchlist",
+            "Show watchlist",
+        ),
+        BotCommand(
+            "market",
+            "Show macro market context",
+        ),
+        BotCommand(
+            "monitor",
+            "Turn automatic alerts on or off",
+        ),
+        BotCommand(
+            "status",
+            "Show bot status",
+        ),
     ]
 
-    loaded_count = 0
-    failed_count = 0
-
-    for interval, display_name in TIMEFRAMES.items():
-        try:
-            candles = await get_klines(
-                interval=interval,
-                limit=250,
-            )
-
-            result = analyze_candles(
-                candles
-            )
-
-            trend = result["trend"]
-            trend_emoji = result["trend_emoji"]
-            current_price = float(
-                result["price"]
-            )
-
-            rsi_text = format_number(
-                result["rsi"],
-                1,
-            )
-
-            report_lines.append(
-                f"{trend_emoji} {display_name}: {trend}"
-            )
-
-            report_lines.append(
-                f"Price ${current_price:,.2f} | RSI {rsi_text}"
-            )
-
-            report_lines.append("")
-
-            loaded_count += 1
-
-        except Exception as error:
-            logger.exception(
-                "Timeframe %s failed: %s",
-                interval,
-                error,
-            )
-
-            report_lines.append(
-                f"⚠️ {display_name}: Request failed"
-            )
-
-            report_lines.append(
-                f"{type(error).__name__}: "
-                f"{str(error)[:100]}"
-            )
-
-            report_lines.append("")
-
-            failed_count += 1
-
-        await asyncio.sleep(0.35)
-
-    report_lines.extend(
-        [
-            f"✅ Loaded: {loaded_count}",
-            f"⚠️ Failed: {failed_count}",
-            "Source: Binance spot candles",
-        ]
+    await application.bot.set_my_commands(
+        commands
     )
 
-    await loading_message.edit_text(
-        "\n".join(report_lines)
+    monitor_task = asyncio.create_task(
+        monitor_loop(
+            application
+        ),
+        name="market-monitor",
+    )
+
+    application.bot_data[
+        "monitor_task"
+    ] = monitor_task
+
+    logger.info(
+        "Jan Crypto Signal Bot initialized."
     )
 
 
-# =========================================================
-# ERROR HANDLER
-# =========================================================
+async def post_shutdown(
+    application: Application,
+) -> None:
+    monitor_task = application.bot_data.get(
+        "monitor_task"
+    )
+
+    if monitor_task is not None:
+        monitor_task.cancel()
+
+        with suppress(
+            asyncio.CancelledError
+        ):
+            await monitor_task
+
 
 async def error_handler(
     update: object,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     logger.error(
-        "Telegram update caused an error",
+        "Telegram update caused an error.",
         exc_info=context.error,
     )
 
 
 # =========================================================
-# BOT STARTUP
+# START BOT
 # =========================================================
-
-async def post_init(
-    application: Application,
-) -> None:
-    await application.bot.delete_webhook(
-        drop_pending_updates=True
-    )
-
-    logger.info(
-        "Webhook cleared and bot initialized"
-    )
-
 
 def main() -> None:
     if not TELEGRAM_TOKEN:
@@ -693,45 +1453,127 @@ def main() -> None:
             "from Railway Variables."
         )
 
+    if "\n" in TELEGRAM_TOKEN:
+        raise ValueError(
+            "TELEGRAM_BOT_TOKEN still contains "
+            "a newline."
+        )
+
+    if ":" not in TELEGRAM_TOKEN:
+        raise ValueError(
+            "TELEGRAM_BOT_TOKEN does not look "
+            "like a valid Telegram bot token."
+        )
+
     application = (
         ApplicationBuilder()
-        .token(TELEGRAM_TOKEN)
-        .post_init(post_init)
+        .token(
+            TELEGRAM_TOKEN
+        )
+        .post_init(
+            post_init
+        )
+        .post_shutdown(
+            post_shutdown
+        )
         .build()
     )
 
     application.add_handler(
         CommandHandler(
             "start",
-            start,
+            start_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "help",
+            help_command,
         )
     )
 
     application.add_handler(
         CommandHandler(
             "status",
-            status,
+            status_command,
         )
     )
 
     application.add_handler(
         CommandHandler(
             "price",
-            price,
+            price_command,
         )
     )
 
     application.add_handler(
         CommandHandler(
-            "levels",
-            levels,
+            "scan",
+            scan_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "analysis",
+            analysis_command,
         )
     )
 
     application.add_handler(
         CommandHandler(
             "timeframes",
-            timeframes,
+            timeframes_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "pair",
+            pair_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "watch",
+            watch_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "addwatch",
+            addwatch_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "removewatch",
+            removewatch_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "watchlist",
+            watchlist_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "monitor",
+            monitor_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "market",
+            market_command,
         )
     )
 
@@ -740,12 +1582,11 @@ def main() -> None:
     )
 
     logger.info(
-        "Jan SOL Signal Bot started"
+        "Jan Crypto Signal Bot starting..."
     )
 
     application.run_polling(
         drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES,
     )
 
 
