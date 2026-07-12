@@ -44,7 +44,7 @@ TELEGRAM_CHAT_ID = os.getenv(
 # BINANCE SETTINGS
 # =========================================================
 
-BINANCE_BASE_URL = "https://api.binance.com"
+BINANCE_BASE_URL = "https://data-api.binance.vision"
 SYMBOL = "SOLUSDT"
 
 TIMEFRAMES = {
