@@ -43,9 +43,10 @@ from strategy import (
 
 try:
     from market_context import (
-        MarketContext,
-        build_market_context,
-    )
+    MarketContext,
+    build_market_context,
+    get_market_context_data,
+)
 
     MARKET_CONTEXT_AVAILABLE = True
 
@@ -328,6 +329,23 @@ async def fetch_symbol_snapshot(
 
 
 async def fetch_context_data(
+    symbol: str,
+) -> dict[str, Any] | None:
+    if not MARKET_CONTEXT_AVAILABLE:
+        return None
+
+    try:
+        return await get_market_context_data(
+            symbol
+        )
+
+    except Exception:
+        logger.exception(
+            "Macro market data failed for %s.",
+            symbol,
+        )
+
+        return None
     symbol: str,
 ) -> dict[str, Any] | None:
     context_function = getattr(
