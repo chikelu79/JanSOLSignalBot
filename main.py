@@ -346,30 +346,7 @@ async def fetch_context_data(
         )
 
         return None
-    symbol: str,
-) -> dict[str, Any] | None:
-    context_function = getattr(
-        market,
-        "get_market_context_data",
-        None,
-    )
-
-    if context_function is None:
-        return None
-
-    try:
-        return await context_function(
-            symbol
-        )
-
-    except Exception:
-        logger.exception(
-            "Macro market data failed for %s.",
-            symbol,
-        )
-
-        return None
-
+    
 
 # =========================================================
 # ANALYSIS ENGINE
