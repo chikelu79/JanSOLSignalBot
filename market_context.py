@@ -46,6 +46,9 @@ FRED_VIX_CSV_URL = (
 
 @dataclass
 class MarketContext:
+        macro_score: float
+    macro_bias: str
+    macro_reasons: list[str]
     available: bool
 
     original_score: float
@@ -1054,7 +1057,111 @@ def evaluate_crypto_market(
 # =========================================================
 # COMPLETE CONTEXT ENGINE
 # =========================================================
+def calculate_macro_bias(
+    btc_score: float,
+    eth_score: float,
+    btc_correlation: float,
+    btc_dominance: float,
+    market_change_24h: float,
+    vix_value: float,
+) -> tuple[float, str, list[str]]:
+    macro_score = 0.0
+    reasons: list[str] = []
 
+    correlation_weight = max(
+        0.25,
+        min(abs(btc_correlation), 1.0),
+    )
+
+    btc_effect = (
+        max(-10.0, min(10.0, btc_score / 6.0))
+        * correlation_weight
+    )
+    macro_score += btc_effect
+
+    if btc_effect >= 2.0:
+        reasons.append(
+            "BTC trend supports risk appetite."
+        )
+    elif btc_effect <= -2.0:
+        reasons.append(
+            "BTC trend creates bearish market pressure."
+        )
+
+    eth_effect = max(
+        -5.0,
+        min(5.0, eth_score / 10.0),
+    )
+    macro_score += eth_effect
+
+    if eth_effect >= 1.5:
+        reasons.append(
+            "ETH strength supports the altcoin market."
+        )
+    elif eth_effect <= -1.5:
+        reasons.append(
+            "ETH weakness weighs on altcoins."
+        )
+
+    market_effect = max(
+        -8.0,
+        min(8.0, market_change_24h * 2.5),
+    )
+    macro_score += market_effect
+
+    if market_change_24h >= 1.0:
+        reasons.append(
+            "The total crypto market is expanding."
+        )
+    elif market_change_24h <= -1.0:
+        reasons.append(
+            "The total crypto market is contracting."
+        )
+
+    if btc_dominance >= 60.0:
+        macro_score -= 3.0
+        reasons.append(
+            "High BTC dominance may restrict altcoin strength."
+        )
+    elif btc_dominance <= 52.0:
+        macro_score += 2.0
+        reasons.append(
+            "Lower BTC dominance may favor altcoins."
+        )
+
+    if vix_value >= 30.0:
+        macro_score -= 6.0
+        reasons.append(
+            "High VIX signals strong risk aversion."
+        )
+    elif vix_value >= 22.0:
+        macro_score -= 3.0
+        reasons.append(
+            "Elevated VIX adds risk-off pressure."
+        )
+    elif 0.0 < vix_value <= 17.0:
+        macro_score += 2.0
+        reasons.append(
+            "Low VIX supports risk appetite."
+        )
+
+    macro_score = max(
+        -25.0,
+        min(25.0, macro_score),
+    )
+
+    if macro_score >= 8.0:
+        macro_bias = "BULLISH"
+    elif macro_score <= -8.0:
+        macro_bias = "BEARISH"
+    else:
+        macro_bias = "NEUTRAL"
+
+    return (
+        round(macro_score, 1),
+        macro_bias,
+        reasons,
+    )
 def build_market_context(
     selected_signal: MarketSignal,
     context_data: dict[str, Any],
@@ -1301,8 +1408,22 @@ def build_market_context(
             warnings
         )
     )
-
+    (
+        macro_score,
+        macro_bias,
+        macro_reasons,
+    ) = calculate_macro_bias(
+        btc_score=btc_score,
+        eth_score=eth_score,
+        btc_correlation=correlation,
+        btc_dominance=btc_dominance,
+        market_change_24h=market_change,
+        vix_value=vix_value,
+    )
     return MarketContext(
+               macro_score=macro_score,
+        macro_bias=macro_bias,
+        macro_reasons=macro_reasons, 
         available=True,
         original_score=selected_signal.score,
         adjusted_score=adjusted_score,
