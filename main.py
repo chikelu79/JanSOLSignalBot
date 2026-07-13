@@ -1119,7 +1119,7 @@ async def market_command(
             ),
             ]    
             if macro_context.macro_reasons:
-                lines.extend([
+                    lines.extend([
             "",
             "MACRO BIAS FACTORS",
             *[
@@ -1128,8 +1128,8 @@ async def market_command(
             ],
             ])
 
-        if macro_context.reasons:
-        lines.extend([
+            if macro_context.reasons:
+                    lines.extend([
             "",
             "SUPPORTING FACTORS",
             *[
@@ -1138,8 +1138,8 @@ async def market_command(
             ],
             ])
 
-        if macro_context.warnings:
-        lines.extend([
+            if macro_context.warnings:
+                    lines.extend([
             "",
             "RISKS",
             *[
@@ -1147,13 +1147,12 @@ async def market_command(
                 for warning in macro_context.warnings[:6]
             ],
             ])
-        await edit_or_reply(
+            await edit_or_reply(
             update,
             waiting,
             "\n".join(
                 lines
             ),
-        )
 
     except Exception as error:
         logger.exception(
