@@ -73,6 +73,10 @@ class MarketContext:
     vix_change_percent: float
     vix_regime: str
 
+    fear_greed_value: int
+    fear_greed_classification: str
+    fear_greed_effect: str
+    
     reasons: list[str]
     warnings: list[str]
 
