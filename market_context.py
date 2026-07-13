@@ -1419,24 +1419,24 @@ def build_market_context(
         btc_dominance=btc_dominance,
         market_change_24h=market_change,
         vix_value=vix_value,
-    )
+        )
     macro_adjustment = clamp(
     macro_score * 0.25,
     -8.0,
     8.0,
-)
+        )
 
-total_adjustment = clamp(
+    total_adjustment = clamp(
     total_adjustment + macro_adjustment,
     -30.0,
     30.0,
-)
+        )
 
-adjusted_score = clamp(
+    adjusted_score = clamp(
     selected_signal.score + total_adjustment,
     -100.0,
     100.0,
-)
+        )
 return MarketContext(
                macro_score=macro_score,
         macro_bias=macro_bias,
