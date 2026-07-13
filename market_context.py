@@ -1271,13 +1271,9 @@ def build_market_context(
     )
 
     if provider_errors:
+    for provider_name, provider_error in provider_errors.items():
         warnings.append(
-            "Some macro providers were unavailable: "
-            + ", ".join(
-                sorted(
-                    provider_errors.keys()
-                )
-            )
+            f"{provider_name} failed: {provider_error}"
         )
 
     total_adjustment = clamp(
