@@ -1118,31 +1118,25 @@ async def market_command(
                 f"({macro_context.vix_regime})"
             ),
         ]
-       if macro_context.macro_reasons:
-        lines.extend(
-            [
-                "",
-                "MACRO BIAS FACTORS",
-                *[
-                    f"• {reason}"
-                    for reason
-                    in macro_context.macro_reasons[:6]
-                ],
-            ]
-        )
-        if macro_context.reasons:
-            lines.extend(
-                [
-                    "",
-                    "SUPPORTING FACTORS",
-                    *[
-                        f"• {reason}"
-                        for reason
-                        in macro_context.reasons[:6]
-                    ],
-                ]
-            )
+     if macro_context.macro_reasons:
+        lines.extend([
+            "",
+            "MACRO BIAS FACTORS",
+            *[
+                f"• {reason}"
+                for reason in macro_context.macro_reasons[:6]
+            ],
+        ])
 
+    if macro_context.reasons:
+        lines.extend([
+            "",
+            "SUPPORTING FACTORS",
+            *[
+                f"• {reason}"
+                for reason in macro_context.reasons[:6]
+            ],
+        ])
         if macro_context.warnings:
             lines.extend(
                 [
