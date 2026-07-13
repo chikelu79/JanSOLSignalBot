@@ -1,8 +1,10 @@
-import os
+from __future__ import annotations
+
 import asyncio
 import csv
 import io
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Any
