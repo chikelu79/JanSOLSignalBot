@@ -1453,6 +1453,11 @@ def build_market_context(
         vix_value=vix_value,
         vix_change_percent=vix_change,
         vix_regime=vix_regime,
+        
+        fear_greed_value=fear_greed_value,
+        fear_greed_classification=fear_greed_classification,
+        fear_greed_effect=fear_greed_effect,
+        
         reasons=unique_reasons[:10],
         warnings=unique_warnings[:10],
     )
