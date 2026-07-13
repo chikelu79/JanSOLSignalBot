@@ -1146,7 +1146,7 @@ def build_market_context(
             )
 
     if btc_signal is not None:
-    correlation = calculate_correlation(
+        correlation = calculate_correlation(
         selected_signal,
         btc_signal,
     )
