@@ -257,66 +257,103 @@ async def fetch_snapshot(
 # =========================================================
 
 async def fetch_global_crypto() -> dict[str, float]:
-    cached_data = GLOBAL_CRYPTO_CACHE.get(
-        "data"
-    )
-
+    cached_data = GLOBAL_CRYPTO_CACHE.get("data")
     cached_timestamp = float(
-        GLOBAL_CRYPTO_CACHE.get(
-            "timestamp",
-            0.0,
-        )
-    )
-
-    cache_age = (
-        time.time()
-        - cached_timestamp
+        GLOBAL_CRYPTO_CACHE.get("timestamp", 0.0)
     )
 
     if (
         isinstance(cached_data, dict)
-        and cache_age
+        and time.time() - cached_timestamp
         < GLOBAL_CRYPTO_CACHE_SECONDS
     ):
         return cached_data
 
-    response = await fetch_json(
-        COINGECKO_GLOBAL_URL
+    timeout = aiohttp.ClientTimeout(
+        total=25,
+        connect=10,
+        sock_read=20,
     )
 
-    data = response.get(
-        "data"
-    )
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "JanCryptoSignalBot/2.0",
+    }
 
-    if not isinstance(
-        data,
-        dict,
-    ):
+    if COINGECKO_API_KEY:
+        headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
+
+    async def request_global(
+        request_headers: dict[str, str],
+    ) -> dict[str, Any]:
+        async with aiohttp.ClientSession(
+            timeout=timeout,
+            headers=request_headers,
+        ) as session:
+            async with session.get(
+                COINGECKO_GLOBAL_URL
+            ) as response:
+                text = await response.text()
+
+                if response.status != 200:
+                    raise RuntimeError(
+                        f"CoinGecko HTTP "
+                        f"{response.status}: {text[:300]}"
+                    )
+
+                payload = await response.json(
+                    content_type=None
+                )
+
+                if not isinstance(payload, dict):
+                    raise RuntimeError(
+                        "CoinGecko returned invalid JSON."
+                    )
+
+                return payload
+
+    try:
+        response = await request_global(headers)
+
+    except Exception as keyed_error:
+        if not COINGECKO_API_KEY:
+            raise
+
+        logger.warning(
+            "CoinGecko keyed request failed: %s. "
+            "Trying keyless access.",
+            keyed_error,
+        )
+
+        keyless_headers = {
+            "Accept": "application/json",
+            "User-Agent": "JanCryptoSignalBot/2.0",
+        }
+
+        response = await request_global(
+            keyless_headers
+        )
+
+    data = response.get("data")
+
+    if not isinstance(data, dict):
         raise RuntimeError(
-            "CoinGecko response contains "
-            "no valid data object."
+            "CoinGecko response has no data object."
         )
 
     dominance = data.get(
         "market_cap_percentage"
     )
 
-    if not isinstance(
-        dominance,
-        dict,
-    ):
+    if not isinstance(dominance, dict):
         raise RuntimeError(
-            "CoinGecko response contains "
-            "no market-cap percentages."
+            "CoinGecko response has no "
+            "market-cap percentages."
         )
 
-    btc_dominance = dominance.get(
-        "btc"
-    )
-
-    eth_dominance = dominance.get(
-        "eth"
-    )
+    btc_dominance = dominance.get("btc")
+    eth_dominance = dominance.get("eth")
+    usdt_dominance = dominance.get("usdt")
 
     market_change = data.get(
         "market_cap_change_percentage_24h_usd"
@@ -324,8 +361,7 @@ async def fetch_global_crypto() -> dict[str, float]:
 
     if btc_dominance is None:
         raise RuntimeError(
-            "BTC dominance is missing "
-            "from CoinGecko."
+            "CoinGecko did not return BTC dominance."
         )
 
     result = {
@@ -335,18 +371,18 @@ async def fetch_global_crypto() -> dict[str, float]:
         "eth_dominance": float(
             eth_dominance or 0.0
         ),
+        "usdt_dominance": float(
+            usdt_dominance or 0.0
+        ),
         "market_change_24h": float(
             market_change or 0.0
         ),
     }
 
     GLOBAL_CRYPTO_CACHE["data"] = result
-    GLOBAL_CRYPTO_CACHE["timestamp"] = (
-        time.time()
-    )
+    GLOBAL_CRYPTO_CACHE["timestamp"] = time.time()
 
     return result
-
 # =========================================================
 # VIX DATA
 # =========================================================
@@ -515,6 +551,11 @@ def calculate_correlation(
     selected_signal: MarketSignal,
     btc_signal: MarketSignal,
 ) -> float:
+        if (
+        selected_signal.symbol.upper()
+        == btc_signal.symbol.upper()
+    ):
+        return 1.0
     correlations: list[float] = []
 
     weights = {
@@ -1103,16 +1144,16 @@ def build_market_context(
                 f"{type(error).__name__}"
             )
 
+    if btc_signal is not None:
+    correlation = calculate_correlation(
+        selected_signal,
+        btc_signal,
+    )
+
     if (
-        btc_signal is not None
-        and selected_signal.symbol.upper()
+        selected_signal.symbol.upper()
         != "BTCUSDT"
     ):
-        correlation = calculate_correlation(
-            selected_signal,
-            btc_signal,
-        )
-
         (
             adjustment,
             new_reasons,
