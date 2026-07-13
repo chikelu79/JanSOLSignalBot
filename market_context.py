@@ -178,9 +178,6 @@ async def fetch_json(
         f"{last_error}"
     )
 
-                           return data
-
-
 async def fetch_text(
     url: str,
 ) -> str:
