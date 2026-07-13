@@ -167,6 +167,104 @@ def format_market_context(context: Any | None) -> list[str]:
     ]
 
 
+def _weighted_average(values: list[tuple[float, float]]) -> float:
+    total_weight = sum(weight for _, weight in values)
+    if total_weight <= 0:
+        return 0.0
+    return sum(value * weight for value, weight in values) / total_weight
+
+
+def _bias_label(score: float) -> str:
+    if score >= 18:
+        return "BULLISH"
+    if score <= -18:
+        return "BEARISH"
+    return "NEUTRAL"
+
+
+def build_confidence_breakdown(
+    signal: MarketSignal,
+    context: Any | None = None,
+) -> list[str]:
+    """Explain signal quality without changing the trading decision."""
+    timeframe_weights = {
+        "5m": 0.08,
+        "15m": 0.14,
+        "1h": 0.20,
+        "4h": 0.23,
+        "8h": 0.17,
+        "1d": 0.18,
+    }
+    trend_values: list[tuple[float, float]] = []
+    momentum_values: list[tuple[float, float]] = []
+    liquidity_values: list[tuple[float, float]] = []
+    volume_values: list[tuple[float, float]] = []
+
+    for interval, analysis in signal.analyses.items():
+        weight = timeframe_weights.get(interval, 0.10)
+        trend_checks = (
+            analysis.price > analysis.ema20,
+            analysis.ema20 > analysis.ema50,
+            analysis.ema50 > analysis.ema100,
+            analysis.ema100 > analysis.ema200,
+            analysis.price > analysis.vwap,
+            analysis.supertrend_direction > 0,
+        )
+        trend_score = (sum(trend_checks) / len(trend_checks) * 200.0) - 100.0
+        trend_values.append((trend_score, weight))
+
+        momentum_parts = [
+            max(-100.0, min(100.0, (analysis.rsi - 50.0) * 4.0)),
+            45.0 if analysis.macd > analysis.macd_signal else -45.0,
+            max(-100.0, min(100.0, analysis.roc * 12.0)),
+            35.0 if analysis.stoch_rsi_k > analysis.stoch_rsi_d else -35.0,
+        ]
+        momentum_values.append((sum(momentum_parts) / len(momentum_parts), weight))
+
+        range_width = analysis.resistance - analysis.support
+        if analysis.breakout_up:
+            liquidity_score = 100.0
+        elif analysis.breakout_down:
+            liquidity_score = -100.0
+        elif range_width > 0:
+            range_position = (analysis.price - analysis.support) / range_width
+            liquidity_score = max(-100.0, min(100.0, (range_position - 0.5) * 200.0))
+        else:
+            liquidity_score = 0.0
+        liquidity_values.append((liquidity_score, weight))
+
+        volume_activity = max(0.0, min(100.0, analysis.relative_volume / 1.5 * 100.0))
+        volume_values.append((volume_activity, weight))
+
+    trend = _weighted_average(trend_values)
+    momentum = _weighted_average(momentum_values)
+    liquidity = _weighted_average(liquidity_values)
+    volume = _weighted_average(volume_values)
+    macro = float(getattr(context, "macro_score", 0.0))
+    macro = max(-100.0, min(100.0, macro / 30.0 * 100.0))
+
+    available = max(1, len(signal.analyses))
+    dominant = max(
+        signal.bullish_timeframes,
+        signal.bearish_timeframes,
+        signal.neutral_timeframes,
+    )
+    alignment = min(100.0, dominant / available * 100.0)
+    risk_quality = 100.0 - min(50.0, len(signal.warnings) * 8.0)
+    risk_quality = max(0.0, min(100.0, (risk_quality + alignment) / 2.0))
+    risk_label = "LOW" if risk_quality >= 75 else "MEDIUM" if risk_quality >= 50 else "HIGH"
+
+    return [
+        f"Trend: {abs(trend):.0f}% {_bias_label(trend)}",
+        f"Momentum: {abs(momentum):.0f}% {_bias_label(momentum)}",
+        f"Macro: {abs(macro):.0f}% {_bias_label(macro)}",
+        f"Liquidity position: {abs(liquidity):.0f}% {_bias_label(liquidity)}",
+        f"Volume activity: {volume:.0f}%",
+        f"Timeframe alignment: {alignment:.0f}%",
+        f"Risk: {risk_label} ({risk_quality:.0f}/100 quality)",
+    ]
+
+
 def execution_status(signal: MarketSignal) -> tuple[str, str]:
     plan = signal.trade_plan
     if plan is None:
@@ -227,6 +325,9 @@ def build_scan_message(signal: MarketSignal, context: Any | None = None) -> str:
         "TIMEFRAMES",
         *format_timeframes(signal),
         "",
+        "CONFIDENCE BREAKDOWN",
+        *build_confidence_breakdown(signal, context),
+        "",
         "MARKET CONTEXT",
         *format_market_context(context),
     ]
@@ -272,6 +373,9 @@ def build_alert_message(
         f"Adjusted score: {adjusted:+.1f}",
         f"Confidence: {min(95, int(abs(adjusted)))}%",
         f"Session: {session.label}",
+        "",
+        "CONFIDENCE BREAKDOWN",
+        *build_confidence_breakdown(signal, context),
     ]
     if note:
         lines.extend(["", f"Action: {note}"])

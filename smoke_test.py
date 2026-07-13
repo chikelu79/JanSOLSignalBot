@@ -57,6 +57,8 @@ def main() -> None:
     decision = evaluate_signal_alert(signal, context)
     assert "Fear & Greed: 62" in message
     assert "Execution status: WATCH" in message
+    assert "CONFIDENCE BREAKDOWN" in message
+    assert "Risk:" in message
     assert decision.should_send
     assert decision.alert_type == "WATCH"
     print("Smoke test passed")
