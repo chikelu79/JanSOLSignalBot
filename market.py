@@ -292,7 +292,7 @@ async def get_symbol_snapshot(
     async def validate_symbol(
     symbol: str,
 ) -> None:
-    normalized_symbol = symbol.upper().strip()
+        normalized_symbol = symbol.upper().strip()
 
     result = await binance_request(
         endpoint="/api/v3/ticker/price",
