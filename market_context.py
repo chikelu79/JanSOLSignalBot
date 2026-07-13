@@ -1437,7 +1437,7 @@ adjusted_score = clamp(
     -100.0,
     100.0,
 )
-    return MarketContext(
+return MarketContext(
                macro_score=macro_score,
         macro_bias=macro_bias,
         macro_reasons=macro_reasons, 
