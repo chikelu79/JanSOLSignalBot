@@ -288,7 +288,7 @@ async def get_symbol_snapshot(
     }
     async def get_market_snapshot(symbol: str = SYMBOL) -> dict[str, Any]:
     return await get_symbol_snapshot(symbol)
-    )
+    
     async def validate_symbol(
     symbol: str,
 ) -> None:
