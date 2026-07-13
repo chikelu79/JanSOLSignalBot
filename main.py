@@ -1118,41 +1118,41 @@ async def market_command(
                 f"({macro_context.vix_regime})"
             ),
             ]    
-            if macro_context.macro_reasons:
-                    lines.extend([
+    if macro_context.macro_reasons:
+        lines.extend([
             "",
             "MACRO BIAS FACTORS",
             *[
                 f"• {reason}"
                 for reason in macro_context.macro_reasons[:6]
             ],
-            ])
+        ])
 
-            if macro_context.reasons:
-                    lines.extend([
+    if macro_context.reasons:
+        lines.extend([
             "",
             "SUPPORTING FACTORS",
             *[
                 f"• {reason}"
                 for reason in macro_context.reasons[:6]
             ],
-            ])
+        ])
 
-            if macro_context.warnings:
-                    lines.extend([
+    if macro_context.warnings:
+        lines.extend([
             "",
             "RISKS",
             *[
                 f"• {warning}"
                 for warning in macro_context.warnings[:6]
             ],
-            ])
-            await edit_or_reply(
-            update,
-            waiting,
-            "\n".join(
-                lines
-            ),
+        ])
+
+    await edit_or_reply(
+        update,
+        waiting,
+        "\n".join(lines),
+    )
 
     except Exception as error:
         logger.exception(
