@@ -67,19 +67,22 @@ async def binance_request(
 # LIVE TICKER
 # =========================================================
 
-async def get_ticker_24h() -> dict[str, Any]:
+async def get_ticker_24h(
+    symbol: str = SYMBOL,
+) -> dict[str, Any]:
     result = await binance_request(
         endpoint="/api/v3/ticker/24hr",
         params={
-            "symbol": SYMBOL,
+            "symbol": symbol.upper(),
         },
     )
 
     if not isinstance(result, dict):
         raise RuntimeError(
-            "Binance returned an invalid ticker response."
+            f"Invalid Binance ticker response for {symbol}."
         )
 
+    return result
     required_fields = [
         "lastPrice",
         "priceChangePercent",
@@ -109,18 +112,20 @@ async def get_ticker_24h() -> dict[str, Any]:
 
 async def get_klines(
     interval: str,
+    symbol: str = SYMBOL,
     limit: int = CANDLE_LIMIT,
     remove_open_candle: bool = True,
 ) -> pd.DataFrame:
+    normalized_symbol = symbol.upper().strip()
+
     result = await binance_request(
         endpoint="/api/v3/klines",
         params={
-            "symbol": SYMBOL,
+            "symbol": normalized_symbol,
             "interval": interval,
             "limit": limit,
         },
     )
-
     if not isinstance(result, list):
         raise RuntimeError(
             f"Invalid Binance candle response "
@@ -210,15 +215,19 @@ async def get_klines(
 # =========================================================
 
 async def get_all_timeframes(
+    symbol: str = SYMBOL,
     remove_open_candle: bool = True,
 ) -> tuple[
     dict[str, pd.DataFrame],
     dict[str, str],
 ]:
+    normalized_symbol = symbol.upper().strip()
+
     tasks = {
         interval: asyncio.create_task(
             get_klines(
                 interval=interval,
+                symbol=normalized_symbol,
                 remove_open_candle=remove_open_candle,
             )
         )
@@ -234,7 +243,8 @@ async def get_all_timeframes(
 
         except Exception as error:
             logger.exception(
-                "Candle request failed for %s",
+                "Candle request failed for %s %s",
+                normalized_symbol,
                 interval,
             )
 
@@ -249,13 +259,21 @@ async def get_all_timeframes(
 # CURRENT MARKET SNAPSHOT
 # =========================================================
 
-async def get_market_snapshot() -> dict[str, Any]:
+async def get_symbol_snapshot(
+    symbol: str = SYMBOL,
+) -> dict[str, Any]:
+    normalized_symbol = symbol.upper().strip()
+
     ticker_task = asyncio.create_task(
-        get_ticker_24h()
+        get_ticker_24h(
+            normalized_symbol
+        )
     )
 
     candle_task = asyncio.create_task(
-        get_all_timeframes()
+        get_all_timeframes(
+            normalized_symbol
+        )
     )
 
     ticker = await ticker_task
@@ -263,7 +281,34 @@ async def get_market_snapshot() -> dict[str, Any]:
     candle_data, errors = await candle_task
 
     return {
+        "symbol": normalized_symbol,
         "ticker": ticker,
         "candles": candle_data,
         "errors": errors,
     }
+    async def get_market_snapshot(
+    symbol: str = SYMBOL,
+) -> dict[str, Any]:
+    return await get_symbol_snapshot(
+        symbol
+    )
+    async def validate_symbol(
+    symbol: str,
+) -> None:
+    normalized_symbol = symbol.upper().strip()
+
+    result = await binance_request(
+        endpoint="/api/v3/ticker/price",
+        params={
+            "symbol": normalized_symbol,
+        },
+    )
+
+    if (
+        not isinstance(result, dict)
+        or "price" not in result
+    ):
+        raise ValueError(
+            f"{normalized_symbol} is not a valid Binance pair."
+        )
+        
