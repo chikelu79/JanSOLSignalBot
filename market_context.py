@@ -1270,11 +1270,11 @@ def build_market_context(
         {},
     )
 
-    if provider_errors:
-    for provider_name, provider_error in provider_errors.items():
-        warnings.append(
-            f"{provider_name} failed: {provider_error}"
-        )
+        if provider_errors:
+            for provider_name, provider_error in provider_errors.items():
+                warnings.append(
+                    f"{provider_name} failed: {provider_error}"
+                )
 
     total_adjustment = clamp(
         total_adjustment,
