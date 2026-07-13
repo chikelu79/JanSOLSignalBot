@@ -46,14 +46,14 @@ FRED_VIX_CSV_URL = (
 
 @dataclass
 class MarketContext:
-        macro_score: float
-    macro_bias: str
-    macro_reasons: list[str]
     available: bool
-
     original_score: float
     adjusted_score: float
     score_adjustment: float
+
+    macro_score: float
+    macro_bias: str
+    macro_reasons: list[str]
 
     btc_score: float
     btc_direction: str
