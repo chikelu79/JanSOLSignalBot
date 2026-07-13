@@ -30,6 +30,14 @@ GLOBAL_CRYPTO_CACHE: dict[str, Any] = {
 }
 
 GLOBAL_CRYPTO_CACHE_SECONDS = 300
+
+FEAR_GREED_CACHE: dict[str, Any] = {
+    "data": None,
+    "timestamp": 0.0,
+}
+FEAR_GREED_CACHE_SECONDS = 300
+FEAR_GREED_URL = "https://api.alternative.me/fng/?limit=2&format=json"
+
 COINGECKO_GLOBAL_URL = (
     "https://api.coingecko.com/api/v3/global"
 )
@@ -72,6 +80,11 @@ class MarketContext:
     vix_value: float
     vix_change_percent: float
     vix_regime: str
+
+    fear_greed_value: float
+    fear_greed_label: str
+    fear_greed_change: float
+    fear_greed_live: bool
 
     reasons: list[str]
     warnings: list[str]
@@ -388,6 +401,56 @@ async def fetch_global_crypto() -> dict[str, float]:
 
     return result
 # =========================================================
+# CRYPTO FEAR & GREED
+# =========================================================
+
+async def fetch_fear_greed() -> dict[str, Any]:
+    cached_data = FEAR_GREED_CACHE.get("data")
+    cached_timestamp = float(FEAR_GREED_CACHE.get("timestamp", 0.0))
+
+    if (
+        isinstance(cached_data, dict)
+        and time.time() - cached_timestamp < FEAR_GREED_CACHE_SECONDS
+    ):
+        return cached_data
+
+    timeout = aiohttp.ClientTimeout(total=20, connect=8, sock_read=15)
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "JanCryptoSignalBot/2.1",
+    }
+
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        async with session.get(FEAR_GREED_URL) as response:
+            text = await response.text()
+            if response.status != 200:
+                raise RuntimeError(
+                    f"Fear & Greed HTTP {response.status}: {text[:250]}"
+                )
+            payload = await response.json(content_type=None)
+
+    rows = payload.get("data", []) if isinstance(payload, dict) else []
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError("Fear & Greed provider returned no usable data.")
+
+    current = rows[0]
+    previous = rows[1] if len(rows) > 1 else current
+    value = float(current.get("value", 50))
+    previous_value = float(previous.get("value", value))
+    label = str(current.get("value_classification", "Neutral")).upper()
+
+    result = {
+        "value": value,
+        "label": label,
+        "change": value - previous_value,
+        "live": True,
+    }
+    FEAR_GREED_CACHE["data"] = result
+    FEAR_GREED_CACHE["timestamp"] = time.time()
+    return result
+
+
+# =========================================================
 # VIX DATA
 # =========================================================
 
@@ -478,11 +541,16 @@ async def get_market_context_data(
         fetch_vix()
     )
 
+    fear_greed_task = asyncio.create_task(
+        fetch_fear_greed()
+    )
+
     results = await asyncio.gather(
         btc_task,
         eth_task,
         global_task,
         vix_task,
+        fear_greed_task,
         return_exceptions=True,
     )
 
@@ -491,6 +559,7 @@ async def get_market_context_data(
         "eth",
         "global_crypto",
         "vix",
+        "fear_greed",
     ]
 
     context: dict[str, Any] = {
@@ -1064,6 +1133,7 @@ def calculate_macro_bias(
     btc_dominance: float,
     market_change_24h: float,
     vix_value: float,
+    fear_greed_value: float,
 ) -> tuple[float, str, list[str]]:
     macro_score = 0.0
     reasons: list[str] = []
@@ -1153,6 +1223,21 @@ def calculate_macro_bias(
             "Low VIX supports risk appetite."
         )
 
+    if fear_greed_value <= 24.0:
+        macro_score -= 4.0
+        reasons.append("Crypto sentiment is in extreme fear.")
+    elif fear_greed_value <= 44.0:
+        macro_score -= 2.0
+        reasons.append("Crypto sentiment remains fearful.")
+    elif fear_greed_value >= 76.0:
+        macro_score += 2.0
+        reasons.append(
+            "Crypto sentiment is extremely greedy; momentum is strong but reversal risk is elevated."
+        )
+    elif fear_greed_value >= 56.0:
+        macro_score += 2.0
+        reasons.append("Crypto sentiment supports risk appetite.")
+
     macro_score = max(
         -25.0,
         min(25.0, macro_score),
@@ -1193,6 +1278,11 @@ def build_market_context(
     vix_value = 0.0
     vix_change = 0.0
     vix_regime = "UNKNOWN"
+
+    fear_greed_value = 50.0
+    fear_greed_label = "NEUTRAL"
+    fear_greed_change = 0.0
+    fear_greed_live = False
 
     total_adjustment = 0.0
 
@@ -1378,6 +1468,17 @@ def build_market_context(
         reasons.extend(new_reasons)
         warnings.extend(new_warnings)
 
+    fear_greed = context_data.get(
+        "fear_greed",
+        {},
+    )
+
+    if fear_greed:
+        fear_greed_value = float(fear_greed.get("value", 50.0))
+        fear_greed_label = str(fear_greed.get("label", "NEUTRAL"))
+        fear_greed_change = float(fear_greed.get("change", 0.0))
+        fear_greed_live = bool(fear_greed.get("live", True))
+
     provider_errors = context_data.get(
         "provider_errors",
         {},
@@ -1400,6 +1501,7 @@ def build_market_context(
         btc_dominance=btc_dominance,
         market_change_24h=market_change,
         vix_value=vix_value,
+        fear_greed_value=fear_greed_value,
     )
 
     macro_adjustment = clamp(
@@ -1449,6 +1551,10 @@ def build_market_context(
         vix_value=vix_value,
         vix_change_percent=vix_change,
         vix_regime=vix_regime,
+        fear_greed_value=fear_greed_value,
+        fear_greed_label=fear_greed_label,
+        fear_greed_change=fear_greed_change,
+        fear_greed_live=fear_greed_live,
         reasons=unique_reasons[:10],
         warnings=unique_warnings[:10],
     )
