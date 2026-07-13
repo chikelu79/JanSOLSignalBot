@@ -341,28 +341,79 @@ def analyze_timeframe(
         frame
     )
 
+        # Some optional indicators may temporarily contain NaN.
+    # Only the core indicators are required to build a signal.
+
+    required_columns = [
+        "close",
+        "high",
+        "low",
+        "ema20",
+        "ema50",
+        "ema100",
+        "ema200",
+        "sma200",
+        "rsi",
+        "atr",
+    ]
+
+    missing_required = [
+        column
+        for column in required_columns
+        if column not in indicator_frame.columns
+    ]
+
+    if missing_required:
+        raise ValueError(
+            "Missing required indicator columns: "
+            + ", ".join(missing_required)
+        )
+
+    optional_defaults = {
+        "macd": 0.0,
+        "macd_signal": 0.0,
+        "macd_histogram": 0.0,
+        "stoch_rsi_k": 50.0,
+        "stoch_rsi_d": 50.0,
+        "stochastic_k": 50.0,
+        "stochastic_d": 50.0,
+        "williams_r": -50.0,
+        "mfi": 50.0,
+        "adx": 0.0,
+        "plus_di": 0.0,
+        "minus_di": 0.0,
+        "bollinger_upper": 0.0,
+        "bollinger_middle": 0.0,
+        "bollinger_lower": 0.0,
+        "bollinger_width": 0.0,
+        "vwap": 0.0,
+        "obv": 0.0,
+        "roc": 0.0,
+        "momentum": 0.0,
+        "supertrend": 0.0,
+        "supertrend_direction": 0,
+        "relative_volume": 1.0,
+    }
+
+    for column, default_value in optional_defaults.items():
+        if column not in indicator_frame.columns:
+            indicator_frame[column] = default_value
+
     clean_frame = indicator_frame.dropna(
-        subset=[
-            "ema200",
-            "sma200",
-            "rsi",
-            "macd",
-            "macd_signal",
-            "macd_histogram",
-            "stoch_rsi_k",
-            "stoch_rsi_d",
-            "stochastic_k",
-            "stochastic_d",
-            "williams_r",
-            "mfi",
-            "atr",
-            "adx",
-            "bollinger_middle",
-            "vwap",
-            "supertrend",
-            "relative_volume",
-        ]
+        subset=required_columns
     ).copy()
+
+    optional_columns = list(
+        optional_defaults.keys()
+    )
+
+    clean_frame[optional_columns] = (
+        clean_frame[optional_columns]
+        .ffill()
+        .fillna(
+            optional_defaults
+        )
+    )
 
     if len(clean_frame) < 3:
         raise ValueError(
