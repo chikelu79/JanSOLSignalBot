@@ -551,11 +551,12 @@ def calculate_correlation(
     selected_signal: MarketSignal,
     btc_signal: MarketSignal,
 ) -> float:
-        if (
+    if (
         selected_signal.symbol.upper()
         == btc_signal.symbol.upper()
     ):
         return 1.0
+
     correlations: list[float] = []
 
     weights = {
