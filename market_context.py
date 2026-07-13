@@ -1,3 +1,4 @@
+import os
 import asyncio
 import csv
 import io
@@ -17,6 +18,17 @@ from strategy import MarketSignal, build_market_signal
 logger = logging.getLogger(__name__)
 
 
+COINGECKO_API_KEY = os.getenv(
+    "COINGECKO_API_KEY",
+    "",
+).strip()
+
+GLOBAL_CRYPTO_CACHE: dict[str, Any] = {
+    "data": None,
+    "timestamp": 0.0,
+}
+
+GLOBAL_CRYPTO_CACHE_SECONDS = 300
 COINGECKO_GLOBAL_URL = (
     "https://api.coingecko.com/api/v3/global"
 )
@@ -69,9 +81,9 @@ async def fetch_json(
     url: str,
 ) -> dict[str, Any]:
     timeout = aiohttp.ClientTimeout(
-        total=20,
-        connect=8,
-        sock_read=15,
+        total=25,
+        connect=10,
+        sock_read=20,
     )
 
     headers = {
@@ -79,26 +91,92 @@ async def fetch_json(
         "User-Agent": "JanCryptoSignalBot/2.0",
     }
 
-    async with aiohttp.ClientSession(
-        timeout=timeout,
-        headers=headers,
-    ) as session:
-        async with session.get(url) as response:
-            text = await response.text()
+    if (
+        COINGECKO_API_KEY
+        and "coingecko.com" in url
+    ):
+        headers["x-cg-demo-api-key"] = (
+            COINGECKO_API_KEY
+        )
 
-            if response.status != 200:
-                raise RuntimeError(
-                    f"HTTP {response.status}: "
-                    f"{text[:250]}"
+    last_error: Exception | None = None
+
+    for attempt in range(3):
+        try:
+            async with aiohttp.ClientSession(
+                timeout=timeout,
+                headers=headers,
+            ) as session:
+                async with session.get(
+                    url
+                ) as response:
+                    text = await response.text()
+
+                    if response.status == 429:
+                        retry_after = response.headers.get(
+                            "Retry-After",
+                            str(5 * (attempt + 1)),
+                        )
+
+                        try:
+                            delay = float(
+                                retry_after
+                            )
+                        except ValueError:
+                            delay = float(
+                                5 * (attempt + 1)
+                            )
+
+                        logger.warning(
+                            "CoinGecko rate limit reached. "
+                            "Retrying in %.1f seconds.",
+                            delay,
+                        )
+
+                        await asyncio.sleep(
+                            min(delay, 30)
+                        )
+
+                        continue
+
+                    if response.status != 200:
+                        raise RuntimeError(
+                            f"HTTP {response.status} "
+                            f"from {url}: {text[:300]}"
+                        )
+
+                    data = await response.json(
+                        content_type=None
+                    )
+
+                    if not isinstance(
+                        data,
+                        dict,
+                    ):
+                        raise RuntimeError(
+                            "Provider returned invalid JSON."
+                        )
+
+                    return data
+
+        except Exception as error:
+            last_error = error
+
+            logger.warning(
+                "JSON request attempt %s failed: %s",
+                attempt + 1,
+                error,
+            )
+
+            if attempt < 2:
+                await asyncio.sleep(
+                    3 * (attempt + 1)
                 )
 
-            data = await response.json()
-
-            if not isinstance(data, dict):
-                raise RuntimeError(
-                    "Provider returned invalid JSON."
-                )
-
+    raise RuntimeError(
+        "JSON provider failed after three attempts: "
+        f"{last_error}"
+    )
             return data
 
 
@@ -181,41 +259,95 @@ async def fetch_snapshot(
 # =========================================================
 
 async def fetch_global_crypto() -> dict[str, float]:
+    cached_data = GLOBAL_CRYPTO_CACHE.get(
+        "data"
+    )
+
+    cached_timestamp = float(
+        GLOBAL_CRYPTO_CACHE.get(
+            "timestamp",
+            0.0,
+        )
+    )
+
+    cache_age = (
+        time.time()
+        - cached_timestamp
+    )
+
+    if (
+        isinstance(cached_data, dict)
+        and cache_age
+        < GLOBAL_CRYPTO_CACHE_SECONDS
+    ):
+        return cached_data
+
     response = await fetch_json(
         COINGECKO_GLOBAL_URL
     )
 
     data = response.get(
-        "data",
-        {},
+        "data"
     )
+
+    if not isinstance(
+        data,
+        dict,
+    ):
+        raise RuntimeError(
+            "CoinGecko response contains "
+            "no valid data object."
+        )
 
     dominance = data.get(
-        "market_cap_percentage",
-        {},
+        "market_cap_percentage"
     )
 
-    return {
+    if not isinstance(
+        dominance,
+        dict,
+    ):
+        raise RuntimeError(
+            "CoinGecko response contains "
+            "no market-cap percentages."
+        )
+
+    btc_dominance = dominance.get(
+        "btc"
+    )
+
+    eth_dominance = dominance.get(
+        "eth"
+    )
+
+    market_change = data.get(
+        "market_cap_change_percentage_24h_usd"
+    )
+
+    if btc_dominance is None:
+        raise RuntimeError(
+            "BTC dominance is missing "
+            "from CoinGecko."
+        )
+
+    result = {
         "btc_dominance": float(
-            dominance.get(
-                "btc",
-                0.0,
-            )
+            btc_dominance
         ),
         "eth_dominance": float(
-            dominance.get(
-                "eth",
-                0.0,
-            )
+            eth_dominance or 0.0
         ),
         "market_change_24h": float(
-            data.get(
-                "market_cap_change_percentage_24h_usd",
-                0.0,
-            )
+            market_change or 0.0
         ),
     }
 
+    GLOBAL_CRYPTO_CACHE["data"] = result
+    GLOBAL_CRYPTO_CACHE["timestamp"] = (
+        time.time()
+    )
+
+    return result
 
 # =========================================================
 # VIX DATA
