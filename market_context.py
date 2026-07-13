@@ -1408,7 +1408,7 @@ def build_market_context(
             warnings
         )
     )
-        (
+    (
         macro_score,
         macro_bias,
         macro_reasons,
