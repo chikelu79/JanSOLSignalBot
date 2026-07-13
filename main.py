@@ -1118,7 +1118,7 @@ async def market_command(
                 f"({macro_context.vix_regime})"
             ),
             ]    
-            if macro_context.macro_reasons:
+        if macro_context.macro_reasons:
             lines.extend([
                 "",
                 "MACRO BIAS FACTORS",
