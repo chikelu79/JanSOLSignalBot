@@ -177,7 +177,8 @@ async def fetch_json(
         "JSON provider failed after three attempts: "
         f"{last_error}"
     )
-            return data
+
+                           return data
 
 
 async def fetch_text(
