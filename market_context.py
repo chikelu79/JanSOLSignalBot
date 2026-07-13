@@ -1265,8 +1265,8 @@ def build_market_context(
         reasons.extend(new_reasons)
         warnings.extend(new_warnings)
 
-    provider_errors = context_data.get(
-        "provider_errors",
+        provider_errors = context_data.get(
+            "provider_errors",
         {},
     )
 
