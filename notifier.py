@@ -22,6 +22,7 @@ MANAGEMENT_COOLDOWN_SECONDS = 10 * 60
 DO_NOT_CHASE_COOLDOWN_SECONDS = 20 * 60
 RAPID_CHANGE_COOLDOWN_SECONDS = 15 * 60
 DERIVATIVES_ALERT_COOLDOWN_SECONDS = 30 * 60
+ORDER_FLOW_ALERT_COOLDOWN_SECONDS = 60 * 60
 LARGE_TRADE_ALERT_COOLDOWN_SECONDS = 2 * 60 * 60
 DERIVATIVES_EXIT_COOLDOWN_SECONDS = 15 * 60
 ECONOMIC_ALERT_COOLDOWN_SECONDS = 6 * 60 * 60
@@ -1660,14 +1661,24 @@ def evaluate_derivatives_alert(
         (book_imbalance >= 25.0 and taker_flow_imbalance >= 25.0)
         or (book_imbalance <= -25.0 and taker_flow_imbalance <= -25.0)
     )
-    if aligned_order_flow:
-        key = make_alert_key(symbol, "ORDER_FLOW_SHIFT", "BUY" if book_imbalance > 0 else "SELL")
-        if alert_allowed(key, DERIVATIVES_ALERT_COOLDOWN_SECONDS):
+    zone_relevant, zone_label, zone_distance, planned_side = _large_trade_zone_context(symbol, signal.price)
+    if aligned_order_flow and zone_relevant:
+        flow_side = "BUY" if book_imbalance > 0 else "SELL"
+        key = make_alert_key(symbol, "ORDER_FLOW_SHIFT", flow_side)
+        if alert_allowed(key, ORDER_FLOW_ALERT_COOLDOWN_SECONDS):
             mark_alert_sent(key)
             side = "buying" if book_imbalance > 0 else "selling"
-            action = (
-                f"Order-book depth and recent aggressive {side} agree. Treat this as confirmation only; wait for price structure and avoid chasing."
+            proximity = "during an active managed setup" if zone_label == "active managed setup" else (
+                f"while price is {zone_distance:.2f}% from the {zone_label}"
             )
+            supportive = (flow_side == "BUY" and planned_side == "LONG") or (flow_side == "SELL" and planned_side == "SHORT")
+            relationship = f"SUPPORTS {planned_side}" if supportive else f"OPPOSES {planned_side}"
+            guidance = (
+                "Use it as supporting evidence only; still require the planned price and candle trigger."
+                if supportive else
+                "Treat it as a breakout/invalidation warning and do not enter the planned direction until flow changes."
+            )
+            action = f"{relationship}: order-book depth and recent aggressive {side} agree {proximity}. {guidance}"
             return AlertDecision(
                 True,
                 "ORDER_FLOW_SHIFT",
@@ -1681,7 +1692,6 @@ def evaluate_derivatives_alert(
         and abs(large_flow_imbalance) >= 60.0
         and largest_trade_multiple >= 10.0
     )
-    zone_relevant, zone_label, zone_distance, planned_side = _large_trade_zone_context(symbol, signal.price)
     if concentrated_large_flow and zone_relevant:
         side = "BUY" if large_flow_imbalance > 0 else "SELL"
         key = make_alert_key(symbol, "LARGE_TRADE_FLOW", side)

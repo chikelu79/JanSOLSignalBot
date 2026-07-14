@@ -387,9 +387,7 @@ def main() -> None:
         },
     )
     assert liquidation_alert.alert_type == "LIQUIDATION_WAVE"
-    order_flow_alert = evaluate_derivatives_alert(
-        signal,
-        {
+    order_flow_data = {
             "funding_rate": 0.0,
             "funding_label": "BALANCED",
             "open_interest_value": 250000000.0,
@@ -400,9 +398,20 @@ def main() -> None:
             "taker_buy_ratio": 36.0,
             "provider": "Offline test",
             "live": True,
-        },
-    )
+        }
+    remove_armed_trade_plans(signal.symbol)
+    order_flow_without_zone = evaluate_derivatives_alert(signal, order_flow_data)
+    assert order_flow_without_zone.alert_type != "ORDER_FLOW_SHIFT"
+    set_armed_trade_plans(signal.symbol, {"LONG": {
+        "side": "LONG", "interval": "15m",
+        "zone_low": signal.price * 0.999, "zone_high": signal.price * 1.001,
+        "created_at": 1.0, "expires_at": 9999999999.0,
+    }})
+    order_flow_alert = evaluate_derivatives_alert(signal, order_flow_data)
     assert order_flow_alert.alert_type == "ORDER_FLOW_SHIFT"
+    assert "OPPOSES LONG" in order_flow_alert.message
+    assert "breakout/invalidation warning" in order_flow_alert.message
+    remove_armed_trade_plans(signal.symbol)
     large_trade_data = {
             "funding_rate": 0.0,
             "funding_label": "BALANCED",
