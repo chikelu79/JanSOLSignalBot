@@ -19,7 +19,7 @@ from telegram.ext import (
 )
 
 import market
-from economic_calendar import build_calendar_message
+from economic_calendar import build_calendar_message, get_profile_economic_risk
 from news_intelligence import build_news_message, fetch_news_intelligence
 from bot_state import (
     add_to_watchlist,
@@ -50,6 +50,7 @@ from trading_profile import estimate_position, get_profile
 
 riskcalc_sessions: dict[int, dict[str, Any]] = {}
 from notifier import (
+    AlertDecision,
     build_active_setups_message,
     build_radar_stats_message,
     build_scan_message,
@@ -769,6 +770,27 @@ def maybe_auto_arm_plans(signal: MarketSignal) -> bool:
         return False
     set_armed_trade_plans(signal.symbol, plans)
     set_auto_plan_fingerprint(signal.symbol, fingerprint)
+    return True
+
+
+def maybe_refresh_post_event_plans(signal: MarketSignal) -> bool:
+    """Replace zones built before a high-impact release with post-release structure."""
+    if not is_auto_plan_enabled() or get_active_setups().get(signal.symbol):
+        return False
+    economic = get_profile_economic_risk()
+    if economic.status != "EVENT OPPORTUNITY" or economic.event is None:
+        return False
+    armed = get_armed_trade_plans().get(signal.symbol, {})
+    if not armed:
+        return False
+    release_timestamp = economic.event.scheduled_at.timestamp()
+    if not any(float(plan.get("created_at", 0.0)) < release_timestamp for plan in armed.values()):
+        return False
+    refreshed = arm_plan_records(signal, ("LONG", "SHORT"))
+    if not refreshed:
+        return False
+    set_armed_trade_plans(signal.symbol, refreshed)
+    set_auto_plan_fingerprint(signal.symbol, auto_plan_fingerprint(refreshed))
     return True
 
 
@@ -1748,10 +1770,27 @@ async def monitor_one_symbol(
                 macro_context,
                 derivatives_data,
             )
+            event_plans_refreshed = maybe_refresh_post_event_plans(signal)
             maybe_auto_arm_plans(signal)
             armed_decision = evaluate_armed_trade_plan_alert(signal, derivatives_data)
+            refresh_decision = AlertDecision(
+                event_plans_refreshed,
+                "EVENT_PLANS_REFRESHED" if event_plans_refreshed else "NONE",
+                signal.symbol,
+                "\n".join([
+                    f"🔄 {signal.symbol} POST-EVENT PLANS REBUILT",
+                    "",
+                    "The pre-release LONG and SHORT zones were discarded.",
+                    "Fresh support, resistance, invalidation and target levels now use post-release price structure.",
+                    "",
+                    "Monitoring continues automatically. Wait for an approaching-zone or confirmation-ready alert; do not chase the release move.",
+                ]) if event_plans_refreshed else "",
+                "Post-event market structure replaced stale pre-release plans" if event_plans_refreshed else "No event-plan refresh required",
+            )
             alert_decisions = (
-                (armed_decision, derivatives_decision)
+                (refresh_decision, derivatives_decision)
+                if refresh_decision.should_send
+                else (armed_decision, derivatives_decision)
                 if armed_decision.should_send
                 else (decision, derivatives_decision)
                 if decision.should_send
