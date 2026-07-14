@@ -24,6 +24,7 @@ from notifier import (
     build_radar_stats_message,
     build_scan_message,
     build_success_stats_message,
+    build_trade_brief,
     build_trade_dashboard,
     create_structural_trade_plans,
     evaluate_derivatives_alert,
@@ -284,6 +285,13 @@ def main() -> None:
     assert "REVERSAL / PATTERN CLUES" in trade_dashboard
     assert "Provisional TP1:" in trade_dashboard and "Provisional TP3:" in trade_dashboard
     assert "Use /scan for the complete evidence report." in trade_dashboard
+    trade_brief = build_trade_brief(
+        signal,
+        SimpleNamespace(adjusted_score=10.0, taker_flow_imbalance=20.0, large_flow_imbalance=35.0),
+    )
+    assert "QUICK TRADE VIEW" in trade_brief
+    assert "KEY LEVEL MAP" not in trade_brief
+    assert "/trade" in trade_brief and "/scan" in trade_brief and "/health" in trade_brief
     signal.analyses["15m"].divergences = ["Bearish regular divergence"]
     conflicting_dashboard = build_trade_dashboard(
         signal,

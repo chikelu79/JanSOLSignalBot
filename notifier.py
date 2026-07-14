@@ -1138,6 +1138,20 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
     return "\n".join(lines)
 
 
+def build_trade_brief(signal: MarketSignal, context: Any | None = None) -> str:
+    """Return the decision-first portion of the planner for quick Telegram use."""
+    dashboard = build_trade_dashboard(signal, context)
+    decision_section = dashboard.split("\nKEY LEVEL MAP", 1)[0].strip()
+    return "\n".join([
+        decision_section.replace("TRADE PLANNER", "QUICK TRADE VIEW", 1),
+        "",
+        "DETAILS",
+        "• /trade — full plans, key levels, stops and targets",
+        "• /scan — complete technical, macro and order-flow evidence",
+        "• /health — live source and decision-gate status",
+    ])
+
+
 def evidence_icon(reason: str) -> str:
     text = reason.lower()
     bearish = ("crossed below", "bearish", "turned downward", "selling pressure", "flipped negative", "below its", "below ema")

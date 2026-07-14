@@ -55,6 +55,7 @@ from notifier import (
     build_radar_stats_message,
     build_scan_message,
     build_success_stats_message,
+    build_trade_brief,
     build_trade_dashboard,
     create_structural_trade_plans,
     evaluate_signal_alert,
@@ -503,11 +504,13 @@ async def start_command(
         f"{'ON' if is_monitor_enabled() else 'OFF'}\n"
         f"Scan interval: "
         f"{MONITOR_INTERVAL_SECONDS} seconds\n\n"
-        "Best starting point: /trade opens the visual trade planner.\n\n"
+        "Best starting point: /trade opens the compact decision screen.\n\n"
         "Commands:\n"
+        "/brief - Compact trade decision view\n"
         "/price - Current selected-pair price\n"
         "/scan - Full multi-timeframe scan\n"
-        "/trade - Visual trade planner\n"
+        "/trade - Compact trade decision screen\n"
+        "/planner - Full plans, levels and targets\n"
         "/analysis - Same as /scan\n"
         "/timeframes - Compact timeframe view\n"
         "/pair BTCUSDT - Change selected pair\n"
@@ -794,6 +797,10 @@ def build_trade_keyboard() -> InlineKeyboardMarkup:
     auto_label = "🤖 Auto plan: ON" if is_auto_plan_enabled() else "🤖 Auto plan: OFF"
     return InlineKeyboardMarkup([
         [
+            InlineKeyboardButton("⚡ Quick view", callback_data="trade:brief"),
+            InlineKeyboardButton("🎯 Full planner", callback_data="trade:full"),
+        ],
+        [
             InlineKeyboardButton("🔄 Refresh", callback_data="trade:refresh"),
             InlineKeyboardButton("📋 Full scan", callback_data="trade:scan"),
         ],
@@ -880,7 +887,21 @@ def maybe_refresh_post_event_plans(signal: MarketSignal) -> bool:
 
 async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     symbol = get_selected_pair()
-    waiting = await update.effective_message.reply_text(f"🎯 Building {symbol} trade plan...")
+    waiting = await update.effective_message.reply_text(f"⚡ Checking {symbol} trade readiness...")
+    try:
+        signal, macro_context, _ = await analyze_symbol(symbol, include_context=True)
+        await waiting.edit_text(
+            build_trade_brief(signal, macro_context),
+            reply_markup=build_trade_keyboard(),
+        )
+    except Exception as error:
+        logger.exception("Trade view failed for %s.", symbol)
+        await waiting.edit_text(f"⚠️ Trade view failed.\n\nError: {type(error).__name__}: {error}")
+
+
+async def planner_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    symbol = get_selected_pair()
+    waiting = await update.effective_message.reply_text(f"🎯 Building {symbol} full trade plan...")
     try:
         signal, macro_context, _ = await analyze_symbol(symbol, include_context=True)
         await waiting.edit_text(
@@ -892,13 +913,49 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await waiting.edit_text(f"⚠️ Trade planner failed.\n\nError: {type(error).__name__}: {error}")
 
 
+async def brief_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    symbol = get_selected_pair()
+    waiting = await update.effective_message.reply_text(f"⚡ Checking {symbol} trade readiness...")
+    try:
+        signal, macro_context, _ = await analyze_symbol(symbol, include_context=True)
+        await waiting.edit_text(
+            build_trade_brief(signal, macro_context),
+            reply_markup=build_trade_keyboard(),
+        )
+    except Exception as error:
+        logger.exception("Quick trade view failed for %s.", symbol)
+        await waiting.edit_text(f"⚠️ Quick view failed.\n\nError: {type(error).__name__}: {error}")
+
+
 async def trade_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if query is None:
         return
     await query.answer()
     action = str(query.data).removeprefix("trade:")
-    if action == "refresh":
+    if action == "brief":
+        symbol = get_selected_pair()
+        await query.edit_message_text(f"⚡ Checking {symbol} trade readiness...")
+        try:
+            signal, macro_context, _ = await analyze_symbol(symbol, include_context=True)
+            await query.edit_message_text(
+                build_trade_brief(signal, macro_context),
+                reply_markup=build_trade_keyboard(),
+            )
+        except Exception as error:
+            await query.edit_message_text(f"⚠️ Quick view failed: {type(error).__name__}: {error}")
+    elif action == "full":
+        symbol = get_selected_pair()
+        await query.edit_message_text(f"🎯 Building {symbol} full trade plan...")
+        try:
+            signal, macro_context, _ = await analyze_symbol(symbol, include_context=True)
+            await query.edit_message_text(
+                build_trade_dashboard(signal, macro_context),
+                reply_markup=build_trade_keyboard(),
+            )
+        except Exception as error:
+            await query.edit_message_text(f"⚠️ Full planner failed: {type(error).__name__}: {error}")
+    elif action == "refresh":
         symbol = get_selected_pair()
         await query.edit_message_text(f"🎯 Refreshing {symbol} trade plan...")
         try:
@@ -2076,7 +2133,15 @@ async def post_init(
         ),
         BotCommand(
             "trade",
-            "Open visual trade planner",
+            "Open compact trade decision view",
+        ),
+        BotCommand(
+            "planner",
+            "Open full plans, levels and targets",
+        ),
+        BotCommand(
+            "brief",
+            "Compact focus and readiness view",
         ),
         BotCommand(
             "analysis",
@@ -2273,6 +2338,20 @@ def main() -> None:
         CommandHandler(
             "trade",
             trade_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "brief",
+            brief_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "planner",
+            planner_command,
         )
     )
 
