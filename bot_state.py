@@ -27,6 +27,7 @@ DEFAULT_STATE: dict[str, Any] = {
         "ETHUSDT",
     ],
     "active_setups": {},
+    "early_opportunities": {},
     "trading_horizon": "DAY",
     "risk_style": "BALANCED",
 }
@@ -185,11 +186,40 @@ def validate_state(
                     "breakeven": bool(setup.get("breakeven", False)),
                     "management_stop": float(setup.get("management_stop", clean_plan["stop_loss"])),
                     "exit_warning": bool(setup.get("exit_warning", False)),
+                    "tactical": bool(setup.get("tactical", False)),
+                    "origin_interval": str(setup.get("origin_interval", "")),
                 }
             except (KeyError, TypeError, ValueError):
                 continue
 
     validated["active_setups"] = validated_setups
+
+    opportunities = state.get("early_opportunities", {})
+    validated_opportunities: dict[str, Any] = {}
+    if isinstance(opportunities, dict):
+        for key, item in opportunities.items():
+            if not isinstance(item, dict):
+                continue
+            try:
+                side = str(item["side"]).upper()
+                interval = str(item["interval"])
+                if side not in {"LONG", "SHORT"} or interval not in {"5m", "15m"}:
+                    continue
+                validated_opportunities[str(key)] = {
+                    "symbol": normalize_symbol(str(item["symbol"])),
+                    "interval": interval,
+                    "side": side,
+                    "zone_low": float(item["zone_low"]),
+                    "zone_high": float(item["zone_high"]),
+                    "invalidation": float(item["invalidation"]),
+                    "created_at": float(item["created_at"]),
+                    "expires_at": float(item["expires_at"]),
+                    "relationship": str(item.get("relationship", "MIXED-TREND")),
+                    "triggers": [str(value) for value in item.get("triggers", [])][:8],
+                }
+            except (KeyError, TypeError, ValueError):
+                continue
+    validated["early_opportunities"] = validated_opportunities
 
     return validated
 
@@ -443,6 +473,7 @@ def get_state_snapshot() -> dict[str, Any]:
         "runtime_chat_id": get_runtime_chat_id(),
         "watchlist": get_watchlist(),
         "active_setups": get_active_setups(),
+        "early_opportunities": get_early_opportunities(),
         "trading_horizon": get_trading_horizon(),
         "risk_style": get_risk_style(),
     }
@@ -489,4 +520,22 @@ def remove_active_setup(symbol: str) -> None:
     active_setups = dict(STATE.get("active_setups", {}))
     active_setups.pop(normalized, None)
     STATE["active_setups"] = active_setups
+    save_state(STATE)
+
+
+def get_early_opportunities() -> dict[str, Any]:
+    return json.loads(json.dumps(STATE.get("early_opportunities", {})))
+
+
+def set_early_opportunity(key: str, opportunity: dict[str, Any]) -> None:
+    opportunities = dict(STATE.get("early_opportunities", {}))
+    opportunities[str(key)] = opportunity
+    STATE["early_opportunities"] = opportunities
+    save_state(STATE)
+
+
+def remove_early_opportunity(key: str) -> None:
+    opportunities = dict(STATE.get("early_opportunities", {}))
+    opportunities.pop(str(key), None)
+    STATE["early_opportunities"] = opportunities
     save_state(STATE)

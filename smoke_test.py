@@ -5,7 +5,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-from bot_state import get_active_setups, remove_active_setup, set_active_setup
+from bot_state import get_active_setups, get_early_opportunities, remove_active_setup, remove_early_opportunity, set_active_setup
 from economic_calendar import build_calendar_message, get_economic_risk
 from news_intelligence import build_news_message
 from lunar_context import get_lunar_context
@@ -129,7 +129,7 @@ def main() -> None:
             previous_stoch_rsi_k=12.0, previous_stoch_rsi_d=15.0,
             stoch_rsi_k=24.0, stoch_rsi_d=18.0,
             two_back_mfi=35.0, previous_mfi=33.0, mfi=39.0,
-            relative_volume=1.3,
+            relative_volume=1.0,
             ema20=74.8, vwap=75.0, support=73.5, resistance=76.0,
         ),
         "1h": SimpleNamespace(score=-35.0),
@@ -149,6 +149,9 @@ def main() -> None:
     assert early_alert.should_send
     assert early_alert.alert_type == "EARLY_OPPORTUNITY"
     assert "Distance to decision zone" in early_alert.message
+    stored_key = "TESTUSDT:5m:LONG"
+    assert stored_key in get_early_opportunities()
+    remove_early_opportunity(stored_key)
     signal.price = 100.5
     signal.analyses = {}
     signal.analyses = {

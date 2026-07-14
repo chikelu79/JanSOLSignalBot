@@ -5,7 +5,10 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from bot_state import get_active_setups, get_risk_style, get_trading_horizon, remove_active_setup, set_active_setup
+from bot_state import (
+    get_active_setups, get_early_opportunities, get_risk_style, get_trading_horizon,
+    remove_active_setup, remove_early_opportunity, set_active_setup, set_early_opportunity,
+)
 from economic_calendar import format_event_time, get_economic_risk
 from lunar_context import get_lunar_context
 from session_context import get_session_context, get_special_market_event
@@ -292,7 +295,10 @@ def evaluate_early_opportunity_alert(
 ) -> AlertDecision:
     radar_context = context if context is not None else derivatives
     radar = build_early_opportunity_radar(signal, radar_context)
-    candidates: list[tuple[float, str, str, list[str]]] = []
+    profile = get_profile(get_trading_horizon(), get_risk_style())
+    now = time.time()
+    expiry_seconds = {"SCALPING": 30 * 60, "DAY": 2 * 60 * 60, "SWING": 12 * 60 * 60}[profile.horizon]
+    fresh_blocks: dict[str, list[str]] = {}
     for index, line in enumerate(radar):
         if " EARLY LONG WATCH" not in line and " EARLY SHORT WATCH" not in line:
             continue
@@ -306,21 +312,103 @@ def evaluate_early_opportunity_alert(
             continue
         zone_low = min(analysis.ema20, analysis.vwap)
         zone_high = max(analysis.ema20, analysis.vwap)
-        if zone_low <= signal.price <= zone_high:
-            distance = 0.0
-        else:
-            distance = min(abs(signal.price - zone_low), abs(signal.price - zone_high)) / max(signal.price, 1e-9) * 100.0
-        if distance > 1.0:
-            continue
         block = [line]
         for detail in radar[index + 1:]:
             if not detail:
                 break
             block.append(detail)
-        candidates.append((distance, interval, side, block))
-    if not candidates:
-        return AlertDecision(False, "NONE", signal.symbol, "", "No fresh early opportunity near its decision zone")
-    distance, interval, side, block = min(candidates, key=lambda item: item[0])
+        relationship = "COUNTERTREND" if "COUNTERTREND" in line else "TREND-ALIGNED" if "TREND-ALIGNED" in line else "MIXED-TREND"
+        opportunity_key = f"{signal.symbol}:{interval}:{side}"
+        triggers = block[1].removeprefix("Trigger: ").split(", ") if len(block) > 1 else []
+        set_early_opportunity(opportunity_key, {
+            "symbol": signal.symbol, "interval": interval, "side": side,
+            "zone_low": zone_low, "zone_high": zone_high,
+            "invalidation": analysis.support if side == "LONG" else analysis.resistance,
+            "created_at": now, "expires_at": now + expiry_seconds,
+            "relationship": relationship, "triggers": triggers,
+        })
+        fresh_blocks[opportunity_key] = block
+
+    taker_flow = float(radar_context.get("taker_flow_imbalance", 0.0) if isinstance(radar_context, dict) else getattr(radar_context, "taker_flow_imbalance", 0.0))
+    large_flow = float(radar_context.get("large_flow_imbalance", 0.0) if isinstance(radar_context, dict) else getattr(radar_context, "large_flow_imbalance", 0.0))
+    active = get_active_setups().get(signal.symbol)
+    watch_candidates: list[tuple[float, str, dict[str, Any]]] = []
+    for opportunity_key, opportunity in get_early_opportunities().items():
+        if opportunity.get("symbol") != signal.symbol:
+            continue
+        side = str(opportunity["side"])
+        interval = str(opportunity["interval"])
+        analysis = signal.analyses.get(interval)
+        if analysis is None:
+            continue
+        invalidated = (side == "LONG" and signal.price <= float(opportunity["invalidation"])) or (side == "SHORT" and signal.price >= float(opportunity["invalidation"]))
+        if now >= float(opportunity["expires_at"]) or invalidated:
+            remove_early_opportunity(opportunity_key)
+            continue
+        zone_low = float(opportunity["zone_low"])
+        zone_high = float(opportunity["zone_high"])
+        inside = zone_low <= signal.price <= zone_high
+        distance = 0.0 if inside else min(abs(signal.price - zone_low), abs(signal.price - zone_high)) / max(signal.price, 1e-9) * 100.0
+        if distance <= 1.0:
+            watch_candidates.append((distance, opportunity_key, opportunity))
+        taker_support = (side == "LONG" and taker_flow >= 15.0) or (side == "SHORT" and taker_flow <= -15.0)
+        large_support = (side == "LONG" and large_flow >= 30.0) or (side == "SHORT" and large_flow <= -30.0)
+        countertrend = opportunity.get("relationship") == "COUNTERTREND"
+        required_volume = profile.volume_confirmation * (1.15 if countertrend else 1.0)
+        flow_confirmed = (taker_support and large_support) if countertrend else (taker_support or large_support)
+        if not active and inside and analysis.relative_volume >= required_volume and flow_confirmed:
+            economic = get_economic_risk()
+            if economic.block_new_entries:
+                continue
+            midpoint = (zone_low + zone_high) / 2.0
+            risk = midpoint - float(opportunity["invalidation"]) if side == "LONG" else float(opportunity["invalidation"]) - midpoint
+            if risk <= 0:
+                remove_early_opportunity(opportunity_key)
+                continue
+            direction = 1.0 if side == "LONG" else -1.0
+            plan = TradePlan(
+                side=side, entry_low=zone_low, entry_high=zone_high,
+                stop_loss=float(opportunity["invalidation"]), invalidation=float(opportunity["invalidation"]),
+                tp1=midpoint + direction * risk * 1.25,
+                tp2=midpoint + direction * risk * 2.0,
+                tp3=midpoint + direction * risk * 3.0,
+                risk_per_unit=risk, reward_risk_tp1=1.25,
+                reward_risk_tp2=2.0, reward_risk_tp3=3.0,
+            )
+            setup_states[signal.symbol] = {
+                "side": side, "plan": plan, "created_at": now,
+                "tp1": False, "tp2": False, "breakeven": False,
+                "management_stop": plan.stop_loss, "exit_warning": False,
+                "tactical": True, "origin_interval": interval,
+            }
+            _persist_setup(signal.symbol, setup_states[signal.symbol])
+            remove_early_opportunity(opportunity_key)
+            message = "\n".join([
+                f"🚨 {signal.symbol} TACTICAL {side} ENTRY READY",
+                "", f"Profile: {profile.horizon} / {profile.risk_style}",
+                f"Origin: {interval} {opportunity['relationship']}",
+                f"Entry zone: {price_text(zone_low)} to {price_text(zone_high)}",
+                f"Stop / invalidation: {price_text(plan.stop_loss)}",
+                f"TP1: {price_text(plan.tp1)} (1.25R)",
+                f"TP2: {price_text(plan.tp2)} (2.00R)",
+                f"TP3: {price_text(plan.tp3)} (3.00R)",
+                f"Volume: {analysis.relative_volume:.2f}× (required {required_volume:.2f}×)",
+                f"Taker flow: {taker_flow:+.1f}% | Large-trade flow: {large_flow:+.1f}%",
+                "", "Reasons:", *[f"• {value}" for value in opportunity.get("triggers", [])[:6]],
+                "", "Decision support only. Confirm the candle close and execution price; never enter outside the displayed zone.",
+            ])
+            return AlertDecision(True, "TACTICAL_ENTRY", signal.symbol, message, f"Stored {interval} opportunity reached its zone with confirmation")
+
+    if not watch_candidates:
+        return AlertDecision(False, "NONE", signal.symbol, "", "No stored early opportunity near its decision zone")
+    distance, opportunity_key, opportunity = min(watch_candidates, key=lambda item: item[0])
+    interval = str(opportunity["interval"])
+    side = str(opportunity["side"])
+    block = fresh_blocks.get(opportunity_key, [
+        f"{'🟢' if side == 'LONG' else '🔴'} {interval} STORED {side} WATCH — {opportunity['relationship']}",
+        f"Decision zone: {price_text(opportunity['zone_low'])} to {price_text(opportunity['zone_high'])}",
+        f"Structural invalidation: {price_text(opportunity['invalidation'])}",
+    ])
     key = make_alert_key(signal.symbol, "EARLY_OPPORTUNITY", f"{interval}:{side}")
     if not alert_allowed(key, EARLY_OPPORTUNITY_COOLDOWN_SECONDS):
         return AlertDecision(False, "NONE", signal.symbol, "", "Early-opportunity cooldown active")
@@ -339,7 +427,7 @@ def evaluate_early_opportunity_alert(
         "",
         "This is an early watch, not a confirmed entry. Wait for the displayed price, candle, volume and flow conditions.",
     ])
-    return AlertDecision(True, "EARLY_OPPORTUNITY", signal.symbol, message, f"Fresh {interval} {side.lower()} trigger near decision zone")
+    return AlertDecision(True, "EARLY_OPPORTUNITY", signal.symbol, message, f"Stored {interval} {side.lower()} opportunity near decision zone")
 
 
 def evidence_icon(reason: str) -> str:
@@ -646,6 +734,7 @@ def build_active_setups_message() -> str:
             [
                 "",
                 f"{symbol} — {state.get('side', 'UNKNOWN')}",
+                f"Setup type: {'TACTICAL ' + str(state.get('origin_interval', '')) if state.get('tactical') else 'CONFIRMED TREND'}",
                 f"Entry: {price_text(plan.get('entry_low'))} to {price_text(plan.get('entry_high'))}",
                 f"Stop: {price_text(plan.get('stop_loss'))}",
                 f"Managed protection: {price_text(state.get('management_stop', plan.get('stop_loss')))}",
@@ -1177,7 +1266,9 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
                 state["management_stop"] = (plan.entry_low + plan.entry_high) / 2.0
                 _persist_setup(symbol, state)
                 return _decision(signal, context, "BREAKEVEN", "Trade moved in favor", f"Consider protecting near breakeven at {price_text(state['management_stop'])}, after accounting for fees.", MANAGEMENT_COOLDOWN_SECONDS)
-            if adjusted < -20:
+            tactical_analysis = signal.analyses.get(str(state.get("origin_interval", ""))) if state.get("tactical") else None
+            reversed_now = tactical_analysis.score <= -get_profile(get_trading_horizon(), get_risk_style()).watch_threshold if tactical_analysis is not None else adjusted < -20
+            if reversed_now:
                 _clear_setup(symbol)
                 return _decision(signal, context, "EXIT", "Direction reversed", "The model turned materially bearish; reassess or exit the remaining position.", MANAGEMENT_COOLDOWN_SECONDS)
         else:
@@ -1200,7 +1291,9 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
                 state["management_stop"] = (plan.entry_low + plan.entry_high) / 2.0
                 _persist_setup(symbol, state)
                 return _decision(signal, context, "BREAKEVEN", "Trade moved in favor", f"Consider protecting near breakeven at {price_text(state['management_stop'])}, after accounting for fees.", MANAGEMENT_COOLDOWN_SECONDS)
-            if adjusted > 20:
+            tactical_analysis = signal.analyses.get(str(state.get("origin_interval", ""))) if state.get("tactical") else None
+            reversed_now = tactical_analysis.score >= get_profile(get_trading_horizon(), get_risk_style()).watch_threshold if tactical_analysis is not None else adjusted > 20
+            if reversed_now:
                 _clear_setup(symbol)
                 return _decision(signal, context, "EXIT", "Direction reversed", "The model turned materially bullish; reassess or exit the remaining position.", MANAGEMENT_COOLDOWN_SECONDS)
 
@@ -1278,6 +1371,8 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
             "breakeven": False,
             "management_stop": signal.trade_plan.stop_loss,
             "exit_warning": False,
+            "tactical": False,
+            "origin_interval": "",
         }
         _persist_setup(symbol, setup_states[symbol])
         return _decision(signal, context, "ENTRY", "Setup confirmed at planned level", "Entry is confirmed near the planned zone. Avoid entering outside the displayed range.", ENTRY_COOLDOWN_SECONDS)
