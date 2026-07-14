@@ -197,6 +197,9 @@ def main() -> None:
     tiny_cross.two_back_mfi = tiny_cross.previous_mfi = tiny_cross.mfi = 50.0
     tiny_radar = build_early_opportunity_radar(signal)
     assert not any("RSI 6 crossed" in line or "RSI 12 crossed" in line for line in tiny_radar)
+    tiny_cross.two_back_mfi, tiny_cross.previous_mfi, tiny_cross.mfi = 72.0, 70.9, 73.5
+    hot_mfi_radar = build_early_opportunity_radar(signal)
+    assert not any("MFI money flow turned upward" in line for line in hot_mfi_radar)
     signal.analyses = {
         interval: SimpleNamespace(
             support=99.0 - index * 0.5, resistance=102.0 + index * 0.5,
