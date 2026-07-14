@@ -1983,7 +1983,7 @@ def build_market_context(
         if news_score:
             news_adjustment = clamp(news_score * 0.5, -3.0, 3.0)
             total_adjustment += news_adjustment
-            reasons.append(f"Official-news bias is {news_label.lower()} ({news_score:+.0f}/6).")
+            reasons.append(f"News-intelligence bias is {news_label.lower()} ({news_score:+.0f}/6).")
 
     if provider_errors:
         for provider_name, provider_error in provider_errors.items():

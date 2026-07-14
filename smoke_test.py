@@ -44,6 +44,7 @@ def main() -> None:
     assert evaluate_session_alert().alert_type in {"SESSION_TIMING", "NONE"}
     news_message = build_news_message({"label": "BEARISH", "score": -2, "relevant_items": [], "errors": []})
     assert "24h bias: BEARISH (-2; capped at ±6)" in news_message
+    assert "free third-party archive RSS" in news_message
     structural_analysis = SimpleNamespace(
         atr=2.0,
         support=95.0,

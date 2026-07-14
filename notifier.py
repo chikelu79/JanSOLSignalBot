@@ -262,7 +262,7 @@ def format_market_context(context: Any | None) -> list[str]:
         f"🟡 Context adjustment: {getattr(context, 'score_adjustment', 0):+.1f} (meaningful at ±5; capped at ±30)",
         "",
         f"{'🟢' if getattr(context, 'news_label', 'NEUTRAL') == 'BULLISH' else '🔴' if getattr(context, 'news_label', 'NEUTRAL') == 'BEARISH' else '🟡'} "
-        f"Official news 24h: {getattr(context, 'news_label', 'NEUTRAL')} "
+        f"News intelligence 24h: {getattr(context, 'news_label', 'NEUTRAL')} "
         f"({getattr(context, 'news_score', 0):+.0f}/6; score impact capped at ±3)",
     ]
 
@@ -700,18 +700,20 @@ def evaluate_news_alert(data: dict[str, Any]) -> AlertDecision:
         if item.get("label") == "NEUTRAL":
             continue
         icon = "🟢" if item["label"] == "BULLISH" else "🔴"
+        source_note = "THIRD-PARTY ARCHIVE" if item.get("source_type") == "THIRD_PARTY_ARCHIVE" else "OFFICIAL"
         message = "\n".join([
-            f"{icon} OFFICIAL NEWS ALERT",
+            f"{icon} NEWS INTELLIGENCE ALERT",
             "",
             f"Source: {item['source']}",
+            f"Source type: {source_note}",
             f"Classification: {item['label']} ({int(item['score']):+d}; maximum item weight ±3)",
             f"Headline: {item['title']}",
             f"Link: {item['link']}",
             "",
             "Action: Reassess market structure and liquidity. A headline never creates an entry by itself.",
         ])
-        return AlertDecision(True, "NEWS", "MARKET", message, "New relevant official headline")
-    return AlertDecision(False, "NONE", "MARKET", "", "No new relevant official headline")
+        return AlertDecision(True, "NEWS", "MARKET", message, "New relevant market headline")
+    return AlertDecision(False, "NONE", "MARKET", "", "No new relevant market headline")
 
 
 def evaluate_derivatives_alert(

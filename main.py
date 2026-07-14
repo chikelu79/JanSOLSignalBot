@@ -487,7 +487,7 @@ async def start_command(
         "/watchlist - Show monitored pairs\n"
         "/market - BTC, dominance and VIX context\n"
         "/calendar - CPI, NFP and FOMC risk windows\n"
-        "/news - Official Fed and SEC news intelligence\n"
+        "/news - Fed, SEC and Truth Social intelligence\n"
         "/monitor on - Enable automatic alerts\n"
         "/monitor off - Disable automatic alerts\n"
         "/setups - Show active managed setups\n"
@@ -1381,9 +1381,9 @@ async def monitor_loop(
                                 chat_id=destination,
                                 text=news_decision.message[:TELEGRAM_MESSAGE_LIMIT],
                             )
-                            logger.info("Sent official news alert: %s", news_decision.reason)
+                            logger.info("Sent news intelligence alert: %s", news_decision.reason)
                 except Exception:
-                    logger.exception("Official news monitoring failed.")
+                    logger.exception("News intelligence monitoring failed.")
 
                 watchlist = get_watchlist()[
                     :MAX_MONITORED_PAIRS
@@ -1504,7 +1504,7 @@ async def post_init(
         ),
         BotCommand(
             "news",
-            "Show official news intelligence",
+            "Show Fed, SEC and Truth Social intelligence",
         ),
         BotCommand(
             "monitor",
