@@ -1928,7 +1928,36 @@ async def monitor_one_symbol(
                 derivatives_data,
             )
             event_plans_refreshed = maybe_refresh_post_event_plans(signal)
-            maybe_auto_arm_plans(signal)
+            auto_plans_changed = maybe_auto_arm_plans(signal)
+            breakout_plans = {
+                side: plan
+                for side, plan in get_armed_trade_plans().get(signal.symbol, {}).items()
+                if auto_plans_changed and plan.get("zone_state") == "BREAKOUT RETEST"
+            }
+            breakout_lines: list[str] = []
+            for side, plan in breakout_plans.items():
+                breakout_lines.extend([
+                    f"{'🟢' if side == 'LONG' else '🔴'} {side} RETEST PLAN",
+                    f"Retest zone: {price_text(plan['zone_low'])} to {price_text(plan['zone_high'])}",
+                    f"Invalidation: {price_text(plan['stop'])}",
+                    f"Targets: {price_text(plan['tp1'])} / {price_text(plan['tp2'])} / {price_text(plan['tp3'])}",
+                    "",
+                ])
+            breakout_decision = AlertDecision(
+                bool(breakout_plans),
+                "BREAKOUT_PLAN_CREATED" if breakout_plans else "NONE",
+                signal.symbol,
+                "\n".join([
+                    f"🚀 {signal.symbol} BREAKOUT RETEST PLAN CREATED",
+                    "",
+                    f"Current price: {price_text(signal.price)}",
+                    "The previous pullback level became stale after price broke structure. Automatic planning replaced it with the nearer broken-level retest below.",
+                    "",
+                    *breakout_lines,
+                    "Action: Do not chase the breakout candle. The monitor will warn as price approaches the retest and will only send an entry after the complete confirmation checklist passes.",
+                ]) if breakout_plans else "",
+                "Stale structural plan replaced by breakout-retest continuation plan" if breakout_plans else "No breakout plan replacement",
+            )
             armed_decision = evaluate_armed_trade_plan_alert(signal, derivatives_data)
             refresh_decision = AlertDecision(
                 event_plans_refreshed,
@@ -1946,6 +1975,7 @@ async def monitor_one_symbol(
             )
             alert_decisions = select_monitor_alerts(
                 refresh_decision,
+                breakout_decision,
                 armed_decision,
                 decision,
                 early_decision,

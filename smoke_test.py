@@ -301,6 +301,9 @@ def main() -> None:
     assert select_monitor_alerts(whale, tactical) == (tactical,)
     risk_exit = notifier_module.AlertDecision(True, "DERIVATIVES_EXIT", "SOLUSDT", "exit", "risk")
     assert select_monitor_alerts(tactical, risk_exit) == (risk_exit,)
+    breakout_notice = notifier_module.AlertDecision(True, "BREAKOUT_PLAN_CREATED", "SOLUSDT", "retest", "new plan")
+    early_watch = notifier_module.AlertDecision(True, "EARLY_OPPORTUNITY", "SOLUSDT", "watch", "early")
+    assert select_monitor_alerts(early_watch, breakout_notice) == (breakout_notice,)
     signal.analyses["15m"].divergences = ["Bearish regular divergence"]
     conflicting_dashboard = build_trade_dashboard(
         signal,
