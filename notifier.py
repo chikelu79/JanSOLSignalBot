@@ -202,6 +202,13 @@ def format_market_context(context: Any | None) -> list[str]:
     oi_icon = "🟡" if abs(oi_1h) >= 5.0 else "🔵"
     liquidation_pressure = str(getattr(context, "liquidation_pressure", "UNAVAILABLE"))
     liquidation_icon = "🟢" if liquidation_pressure == "SHORT SQUEEZE" else "🔴" if liquidation_pressure == "LONG FLUSH" else "🟡" if liq_regime != "LOW" else "🔵"
+    book_imbalance = float(getattr(context, "orderbook_imbalance", 0.0))
+    book_label = "BID HEAVY" if book_imbalance >= 15.0 else "ASK HEAVY" if book_imbalance <= -15.0 else "BALANCED"
+    book_icon = "🟢" if book_imbalance >= 15.0 else "🔴" if book_imbalance <= -15.0 else "🟡"
+    taker_ratio = float(getattr(context, "taker_buy_ratio", 50.0))
+    taker_imbalance = float(getattr(context, "taker_flow_imbalance", 0.0))
+    taker_label = "BUY DOMINANT" if taker_imbalance >= 15.0 else "SELL DOMINANT" if taker_imbalance <= -15.0 else "BALANCED"
+    taker_icon = "🟢" if taker_imbalance >= 15.0 else "🔴" if taker_imbalance <= -15.0 else "🟡"
     return [
         f"{direction_emoji(getattr(context, 'btc_direction', 'UNKNOWN'))} BTC: {getattr(context, 'btc_direction', 'UNKNOWN')} "
         f"({getattr(context, 'btc_score', 0):+.1f}; directional at ±62)",
@@ -224,6 +231,15 @@ def format_market_context(context: Any | None) -> list[str]:
         f"🔵 Liquidations 1h: longs ${long_liq:,.0f} / shorts ${short_liq:,.0f}",
         f"{liquidation_icon} Liquidation pressure: {liquidation_pressure} — "
         f"{liq_regime} intensity {liq_intensity:.3f}% of OI (high ≥ 0.10%)",
+        "",
+        "LIQUIDITY & ORDER FLOW",
+        f"{book_icon} Book imbalance: {book_imbalance:+.1f}% — {book_label} (directional at ±15%)",
+        f"🟢 Buy wall: {price_text(getattr(context, 'bid_wall_price', 0.0))} — "
+        f"{getattr(context, 'bid_wall_strength', 0.0):.1f}× median level (significant ≥ 3×)",
+        f"🔴 Sell wall: {price_text(getattr(context, 'ask_wall_price', 0.0))} — "
+        f"{getattr(context, 'ask_wall_strength', 0.0):.1f}× median level (significant ≥ 3×)",
+        f"{taker_icon} Recent taker flow: {taker_ratio:.1f}% buys — {taker_label} "
+        f"(directional beyond 57.5% / below 42.5%)",
         f"🔵 Derivatives source: {getattr(context, 'derivatives_provider', 'UNKNOWN')}",
         "",
         f"{direction_emoji('LONG' if getattr(context, 'macro_bias', 'NEUTRAL') == 'BULLISH' else 'SHORT' if getattr(context, 'macro_bias', 'NEUTRAL') == 'BEARISH' else 'WAIT')} Macro bias: {getattr(context, 'macro_bias', 'NEUTRAL')} "
@@ -554,6 +570,7 @@ def build_derivatives_alert_message(
         "OI_DIVERGENCE": f"🔀 {signal.symbol} PRICE / OI DIVERGENCE",
         "DERIVATIVES_EXIT": f"🚪 {signal.symbol} DERIVATIVES EXIT WARNING",
         "LIQUIDATION_WAVE": f"🌊 {signal.symbol} LIQUIDATION WAVE",
+        "ORDER_FLOW_SHIFT": f"📚 {signal.symbol} ORDER-FLOW SHIFT",
     }
     oi_value = float(derivatives.get("open_interest_value", 0.0))
     liquidation_total = float(derivatives.get("long_liquidations_1h", 0.0)) + float(derivatives.get("short_liquidations_1h", 0.0))
@@ -573,6 +590,9 @@ def build_derivatives_alert_message(
             f"shorts ${float(derivatives.get('short_liquidations_1h', 0.0)):,.0f}",
             f"Liquidation pressure: {derivatives.get('liquidation_pressure', 'UNAVAILABLE')}",
             f"Intensity: {liquidation_intensity:.3f}% of OI (high ≥ 0.10%)",
+            f"Book imbalance: {float(derivatives.get('orderbook_imbalance', 0.0)):+.1f}% (directional at ±15%)",
+            f"Recent taker buys: {float(derivatives.get('taker_buy_ratio', 50.0)):.1f}% "
+            f"(directional beyond 57.5% / below 42.5%)",
             f"Provider: {derivatives.get('provider', 'UNKNOWN')}",
             "",
             f"Action: {action}",
@@ -629,6 +649,8 @@ def evaluate_derivatives_alert(
     long_liquidations = float(derivatives.get("long_liquidations_1h", 0.0))
     short_liquidations = float(derivatives.get("short_liquidations_1h", 0.0))
     liquidation_total = long_liquidations + short_liquidations
+    book_imbalance = float(derivatives.get("orderbook_imbalance", 0.0))
+    taker_flow_imbalance = float(derivatives.get("taker_flow_imbalance", 0.0))
     active = setup_states.get(symbol)
 
     if active:
@@ -685,6 +707,26 @@ def evaluate_derivatives_alert(
                 symbol,
                 build_derivatives_alert_message(signal, derivatives, "LIQUIDATION_WAVE", action),
                 "Live one-hour liquidations crossed the alert threshold",
+            )
+
+    aligned_order_flow = (
+        (book_imbalance >= 25.0 and taker_flow_imbalance >= 25.0)
+        or (book_imbalance <= -25.0 and taker_flow_imbalance <= -25.0)
+    )
+    if aligned_order_flow:
+        key = make_alert_key(symbol, "ORDER_FLOW_SHIFT", "BUY" if book_imbalance > 0 else "SELL")
+        if alert_allowed(key, DERIVATIVES_ALERT_COOLDOWN_SECONDS):
+            mark_alert_sent(key)
+            side = "buying" if book_imbalance > 0 else "selling"
+            action = (
+                f"Order-book depth and recent aggressive {side} agree. Treat this as confirmation only; wait for price structure and avoid chasing."
+            )
+            return AlertDecision(
+                True,
+                "ORDER_FLOW_SHIFT",
+                symbol,
+                build_derivatives_alert_message(signal, derivatives, "ORDER_FLOW_SHIFT", action),
+                "Order-book depth and taker flow aligned strongly",
             )
 
     if abs(oi_5m) >= 5.0 or abs(oi_1h) >= 10.0:

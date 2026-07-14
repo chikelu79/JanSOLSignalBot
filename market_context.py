@@ -106,6 +106,13 @@ class MarketContext:
     long_liquidations_1h: float
     short_liquidations_1h: float
     liquidation_pressure: str
+    orderbook_imbalance: float
+    bid_wall_price: float
+    bid_wall_strength: float
+    ask_wall_price: float
+    ask_wall_strength: float
+    taker_buy_ratio: float
+    taker_flow_imbalance: float
 
     reasons: list[str]
     warnings: list[str]
@@ -674,7 +681,7 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
                     raise RuntimeError(f"OKX returned an error: {str(payload)[:250]}")
                 return payload
 
-        funding_payload, oi_payload, history_payload, liquidation_payload = await asyncio.gather(
+        funding_payload, oi_payload, history_payload, liquidation_payload, instrument_payload, book_payload, trades_payload = await asyncio.gather(
             get_payload("/api/v5/public/funding-rate", {"instId": instrument}),
             get_payload(
                 "/api/v5/public/open-interest",
@@ -688,12 +695,27 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
                 "/api/v5/public/liquidation-orders",
                 {"instType": "SWAP", "uly": f"{base_asset}-USDT", "state": "filled", "limit": "100"},
             ),
+            get_payload(
+                "/api/v5/public/instruments",
+                {"instType": "SWAP", "instId": instrument},
+            ),
+            get_payload(
+                "/api/v5/market/books",
+                {"instId": instrument, "sz": "100"},
+            ),
+            get_payload(
+                "/api/v5/market/trades",
+                {"instId": instrument, "limit": "500"},
+            ),
         )
 
     funding_data = funding_payload.get("data", [])
     oi_data = oi_payload.get("data", [])
     history = history_payload.get("data", [])
-    if not funding_data or not oi_data or len(history) < 2:
+    instrument_data = instrument_payload.get("data", [])
+    book_data = book_payload.get("data", [])
+    trades_data = trades_payload.get("data", [])
+    if not funding_data or not oi_data or len(history) < 2 or not instrument_data or not book_data:
         raise RuntimeError("OKX returned insufficient derivatives data.")
 
     funding_rate = float(funding_data[0]["fundingRate"])
@@ -726,13 +748,21 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
     cutoff_1h = int(time.time() * 1000) - 60 * 60 * 1000
     long_liquidations_1h = 0.0
     short_liquidations_1h = 0.0
+    contract_value = float(instrument_data[0].get("ctVal", 1.0))
     for group in liquidation_payload.get("data", []):
         if group.get("instId") != instrument:
             continue
         for detail in group.get("details", []):
             if int(detail.get("ts", detail.get("time", 0))) < cutoff_1h:
                 continue
-            notional = float(detail.get("sz", 0.0)) * float(detail.get("bkPx", 0.0))
+            # OKX liquidation size is expressed in contracts. Linear USDT
+            # swaps use ctVal units of the base asset per contract (BTC is
+            # commonly 0.01, ETH 0.1, SOL 1), so apply the instrument value.
+            notional = (
+                float(detail.get("sz", 0.0))
+                * contract_value
+                * float(detail.get("bkPx", 0.0))
+            )
             if detail.get("posSide") == "long":
                 long_liquidations_1h += notional
             elif detail.get("posSide") == "short":
@@ -748,6 +778,51 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
     else:
         liquidation_pressure = "TWO-WAY"
 
+    bids = book_data[0].get("bids", [])
+    asks = book_data[0].get("asks", [])
+    best_bid = float(bids[0][0]) if bids else 0.0
+    best_ask = float(asks[0][0]) if asks else 0.0
+    midpoint = (best_bid + best_ask) / 2.0 if best_bid and best_ask else best_bid or best_ask
+
+    def book_levels(levels: list[list[Any]], lower: float, upper: float) -> list[tuple[float, float]]:
+        result: list[tuple[float, float]] = []
+        for level in levels:
+            price = float(level[0])
+            if lower <= price <= upper:
+                notional = price * float(level[1]) * contract_value
+                result.append((price, notional))
+        return result
+
+    near_bids = book_levels(bids, midpoint * 0.99, midpoint) if midpoint else []
+    near_asks = book_levels(asks, midpoint, midpoint * 1.01) if midpoint else []
+    bid_depth = sum(value for _, value in near_bids)
+    ask_depth = sum(value for _, value in near_asks)
+    total_depth = bid_depth + ask_depth
+    orderbook_imbalance = (bid_depth - ask_depth) / total_depth * 100.0 if total_depth else 0.0
+
+    def strongest_wall(levels: list[tuple[float, float]]) -> tuple[float, float]:
+        if not levels:
+            return 0.0, 0.0
+        price, value = max(levels, key=lambda item: item[1])
+        ordered = sorted(item[1] for item in levels)
+        median = ordered[len(ordered) // 2] if ordered else 0.0
+        return price, value / median if median else 0.0
+
+    bid_wall_price, bid_wall_strength = strongest_wall(near_bids)
+    ask_wall_price, ask_wall_strength = strongest_wall(near_asks)
+
+    taker_buy_value = 0.0
+    taker_sell_value = 0.0
+    for trade in trades_data:
+        notional = float(trade.get("px", 0.0)) * float(trade.get("sz", 0.0)) * contract_value
+        if trade.get("side") == "buy":
+            taker_buy_value += notional
+        elif trade.get("side") == "sell":
+            taker_sell_value += notional
+    taker_total = taker_buy_value + taker_sell_value
+    taker_buy_ratio = taker_buy_value / taker_total * 100.0 if taker_total else 50.0
+    taker_flow_imbalance = (taker_buy_value - taker_sell_value) / taker_total * 100.0 if taker_total else 0.0
+
     return {
         "funding_rate": funding_rate,
         "funding_label": funding_label,
@@ -761,6 +836,14 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
         "short_liquidations_1h": short_liquidations_1h,
         "liquidation_pressure": liquidation_pressure,
         "liquidation_intensity": liquidation_intensity,
+        "contract_value": contract_value,
+        "orderbook_imbalance": orderbook_imbalance,
+        "bid_wall_price": bid_wall_price,
+        "bid_wall_strength": bid_wall_strength,
+        "ask_wall_price": ask_wall_price,
+        "ask_wall_strength": ask_wall_strength,
+        "taker_buy_ratio": taker_buy_ratio,
+        "taker_flow_imbalance": taker_flow_imbalance,
     }
 
 
@@ -1586,6 +1669,13 @@ def build_market_context(
     long_liquidations_1h = 0.0
     short_liquidations_1h = 0.0
     liquidation_pressure = "UNAVAILABLE"
+    orderbook_imbalance = 0.0
+    bid_wall_price = 0.0
+    bid_wall_strength = 0.0
+    ask_wall_price = 0.0
+    ask_wall_strength = 0.0
+    taker_buy_ratio = 50.0
+    taker_flow_imbalance = 0.0
 
     total_adjustment = 0.0
 
@@ -1794,6 +1884,13 @@ def build_market_context(
         long_liquidations_1h = float(derivatives.get("long_liquidations_1h", 0.0))
         short_liquidations_1h = float(derivatives.get("short_liquidations_1h", 0.0))
         liquidation_pressure = str(derivatives.get("liquidation_pressure", "UNAVAILABLE"))
+        orderbook_imbalance = float(derivatives.get("orderbook_imbalance", 0.0))
+        bid_wall_price = float(derivatives.get("bid_wall_price", 0.0))
+        bid_wall_strength = float(derivatives.get("bid_wall_strength", 0.0))
+        ask_wall_price = float(derivatives.get("ask_wall_price", 0.0))
+        ask_wall_strength = float(derivatives.get("ask_wall_strength", 0.0))
+        taker_buy_ratio = float(derivatives.get("taker_buy_ratio", 50.0))
+        taker_flow_imbalance = float(derivatives.get("taker_flow_imbalance", 0.0))
 
         if funding_rate >= 0.0005:
             derivatives_adjustment -= 3.0
@@ -1810,6 +1907,13 @@ def build_market_context(
             direction_effect = -2.0 if selected_signal.score > 0 else 2.0
             derivatives_adjustment += direction_effect
             warnings.append("Open interest is contracting; deleveraging weakens trend conviction.")
+
+        if orderbook_imbalance >= 15.0 and taker_flow_imbalance >= 15.0:
+            derivatives_adjustment += 2.0
+            reasons.append("Bid depth and recent aggressive buying confirm bullish order flow.")
+        elif orderbook_imbalance <= -15.0 and taker_flow_imbalance <= -15.0:
+            derivatives_adjustment -= 2.0
+            reasons.append("Ask depth and recent aggressive selling confirm bearish order flow.")
 
         derivatives_adjustment = clamp(derivatives_adjustment, -6.0, 6.0)
         total_adjustment += derivatives_adjustment
@@ -1901,6 +2005,13 @@ def build_market_context(
         long_liquidations_1h=long_liquidations_1h,
         short_liquidations_1h=short_liquidations_1h,
         liquidation_pressure=liquidation_pressure,
+        orderbook_imbalance=orderbook_imbalance,
+        bid_wall_price=bid_wall_price,
+        bid_wall_strength=bid_wall_strength,
+        ask_wall_price=ask_wall_price,
+        ask_wall_strength=ask_wall_strength,
+        taker_buy_ratio=taker_buy_ratio,
+        taker_flow_imbalance=taker_flow_imbalance,
         reasons=unique_reasons[:10],
         warnings=unique_warnings[:10],
     )

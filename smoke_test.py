@@ -108,6 +108,13 @@ def main() -> None:
                 "open_interest_change_1h": 6.5,
                 "live": True,
                 "provider": "Offline test",
+                "orderbook_imbalance": 24.0,
+                "bid_wall_price": 98.5,
+                "bid_wall_strength": 4.2,
+                "ask_wall_price": 102.0,
+                "ask_wall_strength": 2.1,
+                "taker_buy_ratio": 61.0,
+                "taker_flow_imbalance": 22.0,
             },
             "provider_errors": {},
         },
@@ -123,7 +130,15 @@ def main() -> None:
     assert "LONG ≥ +62; SHORT ≤ -62" in message
     assert "active ≥ 67%; strong ≥ 100%" in message
     assert "baseline; direction comes from its % change" in message
+    assert "Book imbalance: +24.0% — BID HEAVY" in message
+    assert "Buy wall: $98.5000 — 4.2× median level" in message
+    assert "Recent taker flow: 61.0% buys — BUY DOMINANT" in message
     assert "\n\nTechnical score:" in message
+    # OKX sizes are contracts, not whole coins; live parsing must apply ctVal.
+    btc_contracts = 100.0
+    btc_contract_value = 0.01
+    btc_price = 62500.0
+    assert btc_contracts * btc_contract_value * btc_price == 62500.0
     derivatives_alert = evaluate_derivatives_alert(
         signal,
         {
@@ -157,6 +172,22 @@ def main() -> None:
         },
     )
     assert liquidation_alert.alert_type == "LIQUIDATION_WAVE"
+    order_flow_alert = evaluate_derivatives_alert(
+        signal,
+        {
+            "funding_rate": 0.0,
+            "funding_label": "BALANCED",
+            "open_interest_value": 250000000.0,
+            "open_interest_change_5m": 0.0,
+            "open_interest_change_1h": 0.0,
+            "orderbook_imbalance": -31.0,
+            "taker_flow_imbalance": -28.0,
+            "taker_buy_ratio": 36.0,
+            "provider": "Offline test",
+            "live": True,
+        },
+    )
+    assert order_flow_alert.alert_type == "ORDER_FLOW_SHIFT"
     assert "Execution status: WATCH" in message
     assert "CONFIDENCE BREAKDOWN" in message
     assert "Risk:" in message
