@@ -77,6 +77,13 @@ def get_profile(horizon: str, risk_style: str) -> TradingProfile:
     )
 
 
+def mfi_reversal_min_change(profile: TradingProfile) -> float:
+    """Scale money-flow reversal sensitivity to the user's trading profile."""
+    base = {"SCALPING": 1.0, "DAY": 3.0, "SWING": 5.0}[profile.horizon]
+    style_adjustment = {"AGGRESSIVE": -0.25, "BALANCED": 0.0, "CONSERVATIVE": 0.75}[profile.risk_style]
+    return max(0.75, base + style_adjustment)
+
+
 def estimate_position(side: str, entry: float, margin: float, leverage: float, stop: float | None = None, maintenance_margin_rate: float = 0.005) -> dict[str, float | str | None]:
     side = side.upper()
     if side not in {"LONG", "SHORT"}:

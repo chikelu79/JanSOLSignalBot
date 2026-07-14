@@ -13,7 +13,7 @@ from economic_calendar import format_event_time, get_economic_risk
 from lunar_context import get_lunar_context
 from session_context import get_session_context, get_special_market_event
 from strategy import MarketSignal, TradePlan, get_readiness_label, get_signal_grade
-from trading_profile import get_profile
+from trading_profile import get_profile, mfi_reversal_min_change
 
 WATCH_COOLDOWN_SECONDS = 20 * 60
 PREPARE_COOLDOWN_SECONDS = 10 * 60
@@ -28,7 +28,6 @@ ECONOMIC_ALERT_COOLDOWN_SECONDS = 6 * 60 * 60
 SESSION_ALERT_COOLDOWN_SECONDS = 4 * 60 * 60
 EARLY_OPPORTUNITY_COOLDOWN_SECONDS = 20 * 60
 RAPID_SCORE_CHANGE = 22.0
-MFI_REVERSAL_MIN_CHANGE = 3.0
 
 last_alert_times: dict[str, float] = {}
 last_signal_hashes: dict[str, str] = {}
@@ -196,6 +195,7 @@ def build_early_opportunity_radar(signal: MarketSignal, context: Any | None = No
     higher_label = "BULLISH" if higher_score >= 20 else "BEARISH" if higher_score <= -20 else "MIXED"
     opportunities: list[str] = []
     profile = get_profile(get_trading_horizon(), get_risk_style())
+    mfi_min_change = mfi_reversal_min_change(profile)
     for interval in ("5m", "15m"):
         analysis = signal.analyses.get(interval)
         if analysis is None:
@@ -241,9 +241,9 @@ def build_early_opportunity_radar(signal: MarketSignal, context: Any | None = No
         mfi = float(getattr(analysis, "mfi", 50.0))
         previous_mfi = float(getattr(analysis, "previous_mfi", mfi))
         two_back_mfi = float(getattr(analysis, "two_back_mfi", previous_mfi))
-        if mfi - previous_mfi >= MFI_REVERSAL_MIN_CHANGE and previous_mfi <= two_back_mfi and previous_mfi <= 55.0:
+        if mfi - previous_mfi >= mfi_min_change and previous_mfi <= two_back_mfi and previous_mfi <= 55.0:
             bullish.append(f"MFI money flow turned upward ({previous_mfi:.1f}→{mfi:.1f})")
-        elif previous_mfi - mfi >= MFI_REVERSAL_MIN_CHANGE and previous_mfi >= two_back_mfi and previous_mfi >= 45.0:
+        elif previous_mfi - mfi >= mfi_min_change and previous_mfi >= two_back_mfi and previous_mfi >= 45.0:
             bearish.append(f"MFI money flow turned downward ({previous_mfi:.1f}→{mfi:.1f})")
         if not bullish and not bearish:
             if analysis.rsi < 28:
@@ -288,6 +288,7 @@ def build_early_opportunity_radar(signal: MarketSignal, context: Any | None = No
         opportunities.extend([
             f"{icon} {interval} EARLY {side} WATCH — {relationship}",
             f"Trigger: {', '.join(triggers)}",
+            *([f"Pattern context: 🔵 COMPRESSION (Bollinger width {analysis.bollinger_width:.2f}%). A breakout or fakeout can override the reversal; require a close and retest."] if float(getattr(analysis, "bollinger_width", 99.0)) < 3.0 else []),
             f"Decision zone: {price_text(zone_low)} to {price_text(zone_high)}; structural invalidation: {price_text(invalidation)}",
             f"Higher-timeframe trend: {higher_label} ({higher_score:+.0f}) — this is not a confirmed entry.",
             f"Volume confirmation: {'🟢 PASSED' if volume_ok else '🟡 MISSING'} ({analysis.relative_volume:.2f}×; required ≥ {required_volume:.2f}×)",

@@ -27,7 +27,7 @@ from indicators import (
     safe_float,
 )
 from bot_state import get_risk_style, get_trading_horizon
-from trading_profile import get_profile
+from trading_profile import get_profile, mfi_reversal_min_change
 
 
 logger = logging.getLogger(__name__)
@@ -910,10 +910,11 @@ def analyze_timeframe(
             "MFI is overbought"
         )
 
-    if mfi - previous_mfi >= 3.0 and previous_mfi <= two_back_mfi and previous_mfi <= 55.0:
+    mfi_min_change = mfi_reversal_min_change(active_profile())
+    if mfi - previous_mfi >= mfi_min_change and previous_mfi <= two_back_mfi and previous_mfi <= 55.0:
         score += 5
         reasons.append(f"MFI money flow turned upward ({previous_mfi:.1f} → {mfi:.1f})")
-    elif previous_mfi - mfi >= 3.0 and previous_mfi >= two_back_mfi and previous_mfi >= 45.0:
+    elif previous_mfi - mfi >= mfi_min_change and previous_mfi >= two_back_mfi and previous_mfi >= 45.0:
         score -= 5
         reasons.append(f"MFI money flow turned downward ({previous_mfi:.1f} → {mfi:.1f})")
 

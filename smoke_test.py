@@ -28,6 +28,7 @@ from notifier import (
     evaluate_signal_alert,
     setup_states,
 )
+from trading_profile import get_profile, mfi_reversal_min_change
 from strategy import MarketSignal, TradePlan, collect_supporting_reasons, create_trade_plan
 from session_context import get_session_context, get_special_market_event
 from trading_profile import estimate_position, get_profile
@@ -140,6 +141,7 @@ def main() -> None:
             previous_stoch_rsi_k=12.0, previous_stoch_rsi_d=15.0,
             stoch_rsi_k=24.0, stoch_rsi_d=18.0,
             two_back_mfi=35.0, previous_mfi=33.0, mfi=39.0,
+            bollinger_width=2.2,
             relative_volume=1.5,
             ema20=74.8, vwap=75.0, support=73.5, resistance=76.0,
         ),
@@ -152,6 +154,10 @@ def main() -> None:
     assert "RSI 6 crossed above RSI 12" in radar[1]
     assert "Stochastic RSI crossed bullish from oversold" in radar[1]
     assert "MFI money flow turned upward" in radar[1]
+    assert any("Pattern context: 🔵 COMPRESSION" in line for line in radar)
+    assert mfi_reversal_min_change(get_profile("SCALPING", "BALANCED")) == 1.0
+    assert mfi_reversal_min_change(get_profile("DAY", "BALANCED")) == 3.0
+    assert mfi_reversal_min_change(get_profile("SWING", "BALANCED")) == 5.0
     assert any("Verdict: 🟡 DEVELOPING" in line for line in radar)
     blocked_radar = build_early_opportunity_radar(
         signal,
