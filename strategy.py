@@ -58,10 +58,14 @@ class TimeframeSignal:
     sma200: float
 
     rsi: float
+    previous_rsi: float
 
     macd: float
     macd_signal: float
     macd_histogram: float
+    previous_macd: float
+    previous_macd_signal: float
+    previous_macd_histogram: float
 
     stoch_rsi_k: float
     stoch_rsi_d: float
@@ -462,6 +466,7 @@ def analyze_timeframe(
         latest["rsi"],
         50.0,
     )
+    previous_rsi = safe_float(previous["rsi"], 50.0)
 
     macd = safe_float(
         latest["macd"]
@@ -474,6 +479,9 @@ def analyze_timeframe(
     macd_histogram = safe_float(
         latest["macd_histogram"]
     )
+
+    previous_macd = safe_float(previous["macd"])
+    previous_macd_signal = safe_float(previous["macd_signal"])
 
     previous_macd_histogram = safe_float(
         previous["macd_histogram"]
@@ -717,6 +725,13 @@ def analyze_timeframe(
             f"RSI is overbought at {rsi:.1f}"
         )
 
+    if previous_rsi < 30 <= rsi:
+        score += 8
+        reasons.append(f"RSI exited oversold territory ({previous_rsi:.1f} → {rsi:.1f})")
+    elif previous_rsi > 70 >= rsi:
+        score -= 8
+        reasons.append(f"RSI exited overbought territory ({previous_rsi:.1f} → {rsi:.1f})")
+
     # =====================================================
     # MACD
     # =====================================================
@@ -728,6 +743,13 @@ def analyze_timeframe(
         )
     else:
         score -= 8
+
+    if previous_macd <= previous_macd_signal and macd > macd_signal:
+        score += 7
+        reasons.append("Fresh bullish MACD line crossover")
+    elif previous_macd >= previous_macd_signal and macd < macd_signal:
+        score -= 7
+        reasons.append("Fresh bearish MACD line crossover")
 
     if (
         macd_histogram
@@ -1039,9 +1061,13 @@ def analyze_timeframe(
         ema200=ema200,
         sma200=sma200,
         rsi=rsi,
+        previous_rsi=previous_rsi,
         macd=macd,
         macd_signal=macd_signal,
         macd_histogram=macd_histogram,
+        previous_macd=previous_macd,
+        previous_macd_signal=previous_macd_signal,
+        previous_macd_histogram=previous_macd_histogram,
         stoch_rsi_k=stoch_rsi_k,
         stoch_rsi_d=stoch_rsi_d,
         stochastic_k=stochastic_k,

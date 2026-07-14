@@ -86,18 +86,26 @@ def estimate_position(side: str, entry: float, margin: float, leverage: float, s
     notional = margin * leverage
     quantity = notional / entry
     if side == "LONG":
+        if stop is not None and stop >= entry:
+            raise ValueError("A long stop must be below the entry price")
         liquidation = entry * (1.0 - 1.0 / leverage + maintenance_margin_rate)
         stop_loss = quantity * max(0.0, entry - stop) if stop is not None else None
     else:
+        if stop is not None and stop <= entry:
+            raise ValueError("A short stop must be above the entry price")
         liquidation = entry * (1.0 + 1.0 / leverage - maintenance_margin_rate)
         stop_loss = quantity * max(0.0, stop - entry) if stop is not None else None
     liquidation_distance = abs(entry - liquidation) / entry * 100.0
     stop_margin_percent = stop_loss / margin * 100.0 if stop_loss is not None else None
+    liquidation_before_stop = bool(
+        stop is not None
+        and ((side == "LONG" and stop <= liquidation) or (side == "SHORT" and stop >= liquidation))
+    )
     return {
         "side": side, "entry": entry, "margin": margin, "leverage": leverage,
         "notional": notional, "quantity": quantity, "liquidation": liquidation,
         "liquidation_distance": liquidation_distance, "stop": stop,
         "stop_loss": stop_loss, "stop_margin_percent": stop_margin_percent,
         "maintenance_margin_rate": maintenance_margin_rate,
+        "liquidation_before_stop": liquidation_before_stop,
     }
-

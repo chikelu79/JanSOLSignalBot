@@ -13,6 +13,7 @@ from market_context import build_market_context
 from notifier import (
     build_active_setups_message,
     build_confidence_breakdown,
+    build_early_opportunity_radar,
     build_scan_message,
     evaluate_derivatives_alert,
     evaluate_economic_alert,
@@ -36,6 +37,8 @@ def main() -> None:
     assert position["notional"] == 2500.0
     assert round(float(position["liquidation"]), 3) == 60.375
     assert round(float(position["stop_loss"]), 2) == 100.0
+    dangerous = estimate_position("LONG", 75.0, 500.0, 20.0, 70.0)
+    assert dangerous["liquidation_before_stop"] is True
     mixed_analyses = {
         interval: SimpleNamespace(score=score, reasons=[f"reason {number}" for number in range(3)])
         for interval, score in {"5m": 20, "15m": 15, "1h": -25, "4h": -30, "8h": -35, "1d": -40}.items()
@@ -114,6 +117,20 @@ def main() -> None:
         supporting_reasons=["Offline smoke-test reason"],
         warnings=[],
     )
+    signal.analyses = {
+        "5m": SimpleNamespace(
+            score=30.0, previous_macd=-0.2, previous_macd_signal=-0.1,
+            macd=0.1, macd_signal=0.0, previous_macd_histogram=-0.1,
+            macd_histogram=0.1, previous_rsi=28.0, rsi=32.0,
+            ema20=74.8, vwap=75.0, support=73.5, resistance=76.0,
+        ),
+        "1h": SimpleNamespace(score=-35.0),
+        "4h": SimpleNamespace(score=-30.0),
+    }
+    radar = build_early_opportunity_radar(signal)
+    assert "EARLY LONG WATCH — COUNTERTREND" in radar[0]
+    assert "fresh bullish MACD line cross" in radar[1]
+    signal.analyses = {}
     context = build_market_context(
         signal,
         {

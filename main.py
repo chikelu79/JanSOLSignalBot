@@ -6,13 +6,15 @@ import os
 from contextlib import suppress
 from typing import Any
 
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 import market
@@ -35,6 +37,9 @@ from bot_state import (
     set_watchlist,
 )
 from trading_profile import estimate_position, get_profile
+
+
+riskcalc_sessions: dict[int, dict[str, Any]] = {}
 from notifier import (
     build_active_setups_message,
     build_scan_message,
@@ -1167,11 +1172,19 @@ async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def riskcalc_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if len(context.args) not in {4, 5}:
+    if not context.args:
+        user_id = update.effective_user.id
+        riskcalc_sessions[user_id] = {"step": "side"}
         await update.effective_message.reply_text(
-            "Use /riskcalc long 75.10 500 5 72.50\n\n"
-            "Order: side, entry, margin, leverage, optional stop."
+            "🧮 POSITION & LIQUIDATION CALCULATOR\n\nStep 1 of 5 — Choose the position direction:",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🟢 LONG", callback_data="risk:side:LONG"),
+                InlineKeyboardButton("🔴 SHORT", callback_data="risk:side:SHORT"),
+            ], [InlineKeyboardButton("✖ Cancel", callback_data="risk:cancel")]]),
         )
+        return
+    if len(context.args) not in {4, 5}:
+        await update.effective_message.reply_text("Send /riskcalc to open the guided calculator.")
         return
     try:
         side = context.args[0]
@@ -1181,6 +1194,10 @@ async def riskcalc_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except ValueError as error:
         await update.effective_message.reply_text(f"⚠️ Invalid calculation: {error}")
         return
+    await update.effective_message.reply_text(build_riskcalc_result(result))
+
+
+def build_riskcalc_result(result: dict[str, Any]) -> str:
     stop_lines = ""
     if result["stop"] is not None:
         stop_lines = (
@@ -1188,7 +1205,9 @@ async def riskcalc_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             f"\nEstimated stop loss: ${float(result['stop_loss']):,.2f}"
             f"\nMargin at risk: {float(result['stop_margin_percent']):.1f}%"
         )
-    await update.effective_message.reply_text(
+        if result.get("liquidation_before_stop"):
+            stop_lines += "\n\n🔴 DANGER: Estimated liquidation is reached before the planned stop. Reduce leverage or move the stop."
+    return (
         "🧮 POSITION & LIQUIDATION ESTIMATE\n\n"
         f"Side: {result['side']}\nEntry: {price_text(result['entry'])}\n"
         f"Margin: ${float(result['margin']):,.2f}\nLeverage: {float(result['leverage']):g}×\n"
@@ -1199,6 +1218,106 @@ async def riskcalc_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         "Estimate assumes an isolated linear USDT position and 0.50% maintenance margin. "
         "Actual liquidation differs by exchange, fee, maintenance tier and cross-margin balance. Verify on the exchange before trading."
     )
+
+
+async def riskcalc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None or update.effective_user is None:
+        return
+    await query.answer()
+    user_id = update.effective_user.id
+    data = str(query.data or "")
+    if data == "risk:cancel":
+        riskcalc_sessions.pop(user_id, None)
+        await query.edit_message_text("Calculator cancelled. Send /riskcalc whenever you want to start again.")
+        return
+    session = riskcalc_sessions.setdefault(user_id, {})
+    parts = data.split(":")
+    if len(parts) == 3 and parts[1] == "side":
+        session.update(side=parts[2], step="entry")
+        await query.edit_message_text(
+            f"🧮 {parts[2]} POSITION\n\nStep 2 of 5 — Enter the planned entry price.\nExample: 75.20"
+        )
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Type the entry price:",
+            reply_markup=ForceReply(selective=True, input_field_placeholder="75.20"),
+        )
+        return
+    if len(parts) == 3 and parts[1] == "leverage":
+        if parts[2] == "CUSTOM":
+            session["step"] = "leverage"
+            await query.edit_message_text("Step 4 of 5 — Type custom leverage from 1 to 125.\nExample: 7")
+            return
+        session["leverage"] = float(parts[2])
+        session["step"] = "stop"
+        await query.edit_message_text(
+            "Step 5 of 5 — Enter your stop price, or tap Skip.\n\nThe stop lets the bot calculate your planned loss.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip stop", callback_data="risk:stop:SKIP")], [InlineKeyboardButton("✖ Cancel", callback_data="risk:cancel")]]),
+        )
+        return
+    if len(parts) == 3 and parts[1] == "stop" and parts[2] == "SKIP":
+        session["stop"] = None
+        try:
+            result = estimate_position(session["side"], session["entry"], session["margin"], session["leverage"], None)
+        except (KeyError, ValueError) as error:
+            await query.edit_message_text(f"⚠️ Calculator state expired: {error}. Send /riskcalc to restart.")
+        else:
+            await query.edit_message_text(build_riskcalc_result(result))
+        riskcalc_sessions.pop(user_id, None)
+
+
+async def riskcalc_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user is None or update.effective_message is None:
+        return
+    user_id = update.effective_user.id
+    session = riskcalc_sessions.get(user_id)
+    if not session or session.get("step") not in {"entry", "margin", "leverage", "stop"}:
+        return
+    try:
+        value = float(update.effective_message.text.strip().replace(",", ""))
+        if value <= 0:
+            raise ValueError("Value must be greater than zero")
+    except ValueError:
+        await update.effective_message.reply_text("⚠️ Please enter a positive number, without currency symbols.")
+        return
+    step = session["step"]
+    if step == "entry":
+        session.update(entry=value, step="margin")
+        await update.effective_message.reply_text(
+            "Step 3 of 5 — Enter the margin you plan to use in USDT.\nExample: 500",
+            reply_markup=ForceReply(selective=True, input_field_placeholder="500"),
+        )
+        return
+    if step == "margin":
+        session.update(margin=value, step="choose_leverage")
+        await update.effective_message.reply_text(
+            "Step 4 of 5 — Choose leverage:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"{leverage}×", callback_data=f"risk:leverage:{leverage}") for leverage in (2, 3, 5)],
+                [InlineKeyboardButton(f"{leverage}×", callback_data=f"risk:leverage:{leverage}") for leverage in (10, 20, 50)],
+                [InlineKeyboardButton("Custom", callback_data="risk:leverage:CUSTOM"), InlineKeyboardButton("✖ Cancel", callback_data="risk:cancel")],
+            ]),
+        )
+        return
+    if step == "leverage":
+        if value > 125:
+            await update.effective_message.reply_text("⚠️ Leverage must be between 1× and 125×.")
+            return
+        session.update(leverage=value, step="stop")
+        await update.effective_message.reply_text(
+            "Step 5 of 5 — Type the stop price, or tap Skip:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip stop", callback_data="risk:stop:SKIP")], [InlineKeyboardButton("✖ Cancel", callback_data="risk:cancel")]]),
+        )
+        return
+    session["stop"] = value
+    try:
+        result = estimate_position(session["side"], session["entry"], session["margin"], session["leverage"], value)
+    except (KeyError, ValueError) as error:
+        await update.effective_message.reply_text(f"⚠️ Could not calculate: {error}. Send /riskcalc to restart.")
+    else:
+        await update.effective_message.reply_text(build_riskcalc_result(result))
+    riskcalc_sessions.pop(user_id, None)
 
 
 async def market_command(
@@ -1867,6 +1986,20 @@ def main() -> None:
         CommandHandler(
             "riskcalc",
             riskcalc_command,
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            riskcalc_callback,
+            pattern=r"^risk:",
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            riskcalc_text_input,
         )
     )
 

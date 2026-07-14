@@ -182,6 +182,59 @@ def format_trade_plan(plan: TradePlan | None) -> list[str]:
     ]
 
 
+def build_early_opportunity_radar(signal: MarketSignal) -> list[str]:
+    """Show fresh lower-timeframe turns without promoting them to confirmed entries."""
+    higher = [signal.analyses.get(interval) for interval in ("1h", "4h", "8h", "1d")]
+    higher_scores = [analysis.score for analysis in higher if analysis is not None]
+    higher_score = sum(higher_scores) / len(higher_scores) if higher_scores else 0.0
+    higher_label = "BULLISH" if higher_score >= 20 else "BEARISH" if higher_score <= -20 else "MIXED"
+    opportunities: list[str] = []
+    for interval in ("5m", "15m"):
+        analysis = signal.analyses.get(interval)
+        if analysis is None:
+            continue
+        bullish: list[str] = []
+        bearish: list[str] = []
+        if analysis.previous_macd <= analysis.previous_macd_signal and analysis.macd > analysis.macd_signal:
+            bullish.append("fresh bullish MACD line cross")
+        elif analysis.previous_macd >= analysis.previous_macd_signal and analysis.macd < analysis.macd_signal:
+            bearish.append("fresh bearish MACD line cross")
+        if analysis.previous_macd_histogram <= 0 < analysis.macd_histogram:
+            bullish.append("histogram flipped positive")
+        elif analysis.previous_macd_histogram >= 0 > analysis.macd_histogram:
+            bearish.append("histogram flipped negative")
+        if analysis.previous_rsi < 30 <= analysis.rsi:
+            bullish.append("RSI exited oversold")
+        elif analysis.previous_rsi > 70 >= analysis.rsi:
+            bearish.append("RSI exited overbought")
+        if not bullish and not bearish:
+            if analysis.rsi < 28:
+                opportunities.extend([f"🟡 {interval} OVERSOLD EXHAUSTION WATCH — RSI {analysis.rsi:.1f}; wait for a bullish turn."])
+            elif analysis.rsi > 72:
+                opportunities.extend([f"🟡 {interval} OVERBOUGHT EXHAUSTION WATCH — RSI {analysis.rsi:.1f}; wait for a bearish turn."])
+            continue
+        side = "LONG" if len(bullish) > len(bearish) else "SHORT"
+        triggers = bullish if side == "LONG" else bearish
+        aligned = (side == "LONG" and higher_label == "BULLISH") or (side == "SHORT" and higher_label == "BEARISH")
+        relationship = "TREND-ALIGNED" if aligned else "COUNTERTREND" if higher_label != "MIXED" else "MIXED-TREND"
+        zone_low = min(analysis.ema20, analysis.vwap)
+        zone_high = max(analysis.ema20, analysis.vwap)
+        invalidation = analysis.support if side == "LONG" else analysis.resistance
+        icon = "🟢" if side == "LONG" else "🔴"
+        opportunities.extend([
+            f"{icon} {interval} EARLY {side} WATCH — {relationship}",
+            f"Trigger: {', '.join(triggers)}",
+            f"Decision zone: {price_text(zone_low)} to {price_text(zone_high)}; structural invalidation: {price_text(invalidation)}",
+            f"Higher-timeframe trend: {higher_label} ({higher_score:+.0f}) — this is not a confirmed entry.",
+            "",
+        ])
+    if not opportunities:
+        return ["No fresh 5m/15m MACD or RSI reversal trigger on this scan."]
+    if opportunities[-1] == "":
+        opportunities.pop()
+    return opportunities
+
+
 def format_market_context(context: Any | None) -> list[str]:
     if context is None:
         return ["Macro context: unavailable"]
@@ -509,6 +562,9 @@ def build_scan_message(signal: MarketSignal, context: Any | None = None) -> str:
         "",
         "TIMEFRAMES",
         *format_timeframes(signal),
+        "",
+        "EARLY OPPORTUNITY RADAR",
+        *build_early_opportunity_radar(signal),
         "",
         "CONFIDENCE BREAKDOWN",
         *build_confidence_breakdown(signal, context),
