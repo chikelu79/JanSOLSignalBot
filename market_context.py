@@ -80,6 +80,8 @@ class MarketContext:
 
     eth_score: float
     eth_direction: str
+    eth_btc_relative_strength: float
+    eth_dominance: float
 
     btc_correlation: float
     correlation_strength: str
@@ -1721,6 +1723,8 @@ def build_market_context(
 
     eth_score = 0.0
     eth_direction = "UNKNOWN"
+    eth_btc_relative_strength = 0.0
+    eth_dominance = 0.0
 
     correlation = 0.0
 
@@ -1837,6 +1841,19 @@ def build_market_context(
                 f"{type(error).__name__}"
             )
 
+    if btc_signal is not None and eth_signal is not None:
+        btc_1h = btc_signal.analyses.get("1h")
+        eth_1h = eth_signal.analyses.get("1h")
+        if btc_1h is not None and eth_1h is not None:
+            eth_btc_relative_strength = float(eth_1h.roc - btc_1h.roc)
+            if selected_signal.symbol.upper() != "BTCUSDT":
+                if eth_btc_relative_strength >= 0.50:
+                    total_adjustment += 1.5
+                    reasons.append("ETH is outperforming BTC over the 12-hour momentum window.")
+                elif eth_btc_relative_strength <= -0.50:
+                    total_adjustment -= 1.5
+                    warnings.append("ETH is underperforming BTC over the 12-hour momentum window.")
+
     if btc_signal is not None:
         correlation = calculate_correlation(
             selected_signal,
@@ -1884,6 +1901,7 @@ def build_market_context(
                 0.0,
             )
         )
+        eth_dominance = float(global_crypto.get("eth_dominance", 0.0))
 
         market_change = float(
             global_crypto.get(
@@ -2106,6 +2124,8 @@ def build_market_context(
         btc_direction=btc_direction,
         eth_score=eth_score,
         eth_direction=eth_direction,
+        eth_btc_relative_strength=eth_btc_relative_strength,
+        eth_dominance=eth_dominance,
         btc_correlation=correlation,
         correlation_strength=correlation_label(
             correlation

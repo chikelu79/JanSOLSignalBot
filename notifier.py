@@ -566,6 +566,8 @@ def format_market_context(context: Any | None) -> list[str]:
     fear_value = float(getattr(context, "fear_greed_value", 50.0))
     btc_premium = float(getattr(context, "btc_coinbase_premium", 0.0))
     eth_premium = float(getattr(context, "eth_coinbase_premium", 0.0))
+    eth_relative = float(getattr(context, "eth_btc_relative_strength", 0.0))
+    eth_dominance = float(getattr(context, "eth_dominance", 0.0))
     premium_live = bool(getattr(context, "coinbase_premium_live", False))
 
     def premium_line(asset: str, value: float) -> str:
@@ -595,6 +597,11 @@ def format_market_context(context: Any | None) -> list[str]:
         f"({getattr(context, 'eth_score', 0):+.1f}; directional at ±{profile.watch_threshold:.0f})",
         premium_line("BTC", btc_premium),
         premium_line("ETH", eth_premium),
+        f"{'🟢' if eth_relative >= 0.50 else '🔴' if eth_relative <= -0.50 else '🟡'} ETH vs BTC momentum (12h): "
+        f"{eth_relative:+.2f}% — {'OUTPERFORMING' if eth_relative >= 0.50 else 'UNDERPERFORMING' if eth_relative <= -0.50 else 'BALANCED'} "
+        f"(directional at ±0.50%)",
+        f"{'🟢' if eth_dominance >= 18.0 else '🔴' if 0 < eth_dominance <= 14.0 else '🟡'} ETH dominance: {eth_dominance:.2f}% "
+        f"(broad alt support ≥ 18%; weak ≤ 14%)",
         "",
         f"🔵 BTC correlation: {correlation:.2f} ({correlation_regime}; high ≥ 0.70)",
         f"🔵 BTC dominance: {getattr(context, 'btc_dominance', 0):.2f}% (altcoin headwind ≥ 58%; support ≤ 52%)",

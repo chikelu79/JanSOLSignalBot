@@ -201,6 +201,7 @@ def main() -> None:
         {
             "global_crypto": {
                 "btc_dominance": 55.0,
+                "eth_dominance": 17.5,
                 "market_change_24h": 1.2,
             },
             "vix": {"value": 16.0, "change_percent": -1.0},
@@ -246,6 +247,8 @@ def main() -> None:
     assert "Fear & Greed: 62" in message
     assert "BTC Coinbase Premium: +0.125% — US BUYING" in message
     assert "ETH Coinbase Premium: -0.135% — US SELLING" in message
+    assert "ETH dominance: 17.50%" in message
+    assert "ETH vs BTC momentum (12h):" in message
     assert "Funding: +0.0600%" in message
     assert "Derivatives source: Offline test" in message
     assert "OI change: +1.20% (5m), +6.50% (1h)" in message
