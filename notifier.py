@@ -1460,6 +1460,11 @@ def evaluate_economic_alert() -> AlertDecision:
 
     mark_alert_sent(key)
     heading = "🚨 HIGH-IMPACT EVENT RISK" if risk.block_new_entries else "📅 HIGH-IMPACT EVENT AHEAD"
+    risk_label = (
+        "🔴 EVENT BLACKOUT — DO NOT OPEN A NEW TRADE"
+        if risk.block_new_entries else
+        "🟡 EVENT APPROACHING — CAUTION"
+    )
     action = (
         "New entries are temporarily blocked. Wait for the release candle to settle and a level to retest."
         if risk.block_new_entries
@@ -1471,7 +1476,7 @@ def evaluate_economic_alert() -> AlertDecision:
             "",
             f"Event: {event.name}",
             f"Time: {format_event_time(event)}",
-            f"Risk status: {risk.status}",
+            f"Risk status: {risk_label}",
             f"Source: {event.source}",
             "",
             risk.detail,

@@ -69,6 +69,8 @@ def main() -> None:
     assert "US Employment / NFP" in build_calendar_message(datetime(2026, 7, 30, 12, 0, tzinfo=eastern))
     economic_alert = evaluate_economic_alert()
     assert economic_alert.alert_type in {"ECONOMIC_EVENT", "NONE"}
+    if economic_alert.alert_type == "ECONOMIC_EVENT":
+        assert "EVENT APPROACHING — CAUTION" in economic_alert.message or "EVENT BLACKOUT — DO NOT OPEN A NEW TRADE" in economic_alert.message
     lunar = get_lunar_context(datetime(2026, 7, 13, 20, 0, tzinfo=eastern))
     assert lunar.label == "NEAR NEW MOON"
     assert get_session_context(datetime(2026, 7, 14, 9, 20, tzinfo=eastern)).label == "US OPEN"
