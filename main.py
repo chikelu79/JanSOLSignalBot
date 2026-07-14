@@ -748,6 +748,7 @@ def arm_plan_records(signal: MarketSignal, sides: tuple[str, ...]) -> dict[str, 
     return {
         side: {
             **generated[side], "created_at": now, "expires_at": now + expiry,
+            "event_plan": False, "zone_state": "WATCHING",
             "approach_alerted": False, "zone_alerted": False, "ready_alerted": False,
         }
         for side in sides if side in generated
@@ -789,6 +790,9 @@ def maybe_refresh_post_event_plans(signal: MarketSignal) -> bool:
     refreshed = arm_plan_records(signal, ("LONG", "SHORT"))
     if not refreshed:
         return False
+    for plan in refreshed.values():
+        plan["event_plan"] = True
+        plan["zone_state"] = "POST_EVENT_WATCH"
     set_armed_trade_plans(signal.symbol, refreshed)
     set_auto_plan_fingerprint(signal.symbol, auto_plan_fingerprint(refreshed))
     return True

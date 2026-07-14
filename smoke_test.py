@@ -290,6 +290,8 @@ def main() -> None:
         {"taker_flow_imbalance": 25.0, "large_flow_imbalance": 40.0},
     )
     assert armed_alert.alert_type in {"ARMED_PLAN_READY", "ARMED_PLAN_ZONE"}
+    if armed_alert.alert_type == "ARMED_PLAN_ZONE":
+        assert "Zone behavior: 🟢 REVERSAL TEST" in armed_alert.message
     remove_armed_trade_plans(signal.symbol)
     signal.price = 100.5
     signal.analyses = {}

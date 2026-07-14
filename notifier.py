@@ -674,10 +674,16 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
             plans.pop(side, None)
             set_armed_trade_plans(signal.symbol, plans)
             reason = "INVALIDATED" if invalidated else "EXPIRED"
+            follow_up = (
+                "The level broke. Wait for a candle close beyond it and a retest before considering the breakout direction; automatic planning will rebuild the next structure."
+                if invalidated
+                else "The plan timed out. Automatic planning will prepare a new structure when qualified levels change."
+            )
             return AlertDecision(True, "ARMED_PLAN_CLOSED", signal.symbol, "\n".join([
                 f"{'🔴' if invalidated else '⌛'} {signal.symbol} {side} PLAN {reason}", "",
                 f"Current price: {price_text(signal.price)}", f"Plan stop: {price_text(plan['stop'])}",
                 "The preplanned setup has been removed. No trade is assumed.",
+                f"Next: {follow_up}",
             ]), f"Armed {side.lower()} plan {reason.lower()}")
         zone_low, zone_high = float(plan["zone_low"]), float(plan["zone_high"])
         inside = zone_low <= signal.price <= zone_high
@@ -697,6 +703,10 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
         opposing_clue = any(("bearish" if side == "LONG" else "bullish") in clue for clue in directional_clues)
         momentum_ok = (analysis.score >= 20 if side == "LONG" else analysis.score <= -20) and not opposing_clue
         candle_ok = reversal_candle_confirmed(analysis, side)
+        opposite_flow = (side == "LONG" and (taker <= -15 or large <= -30)) or (side == "SHORT" and (taker >= 15 or large >= 30))
+        opposite_momentum = analysis.score <= -20 if side == "LONG" else analysis.score >= 20
+        breakout_flag = bool(getattr(analysis, "breakout_down" if side == "LONG" else "breakout_up", False))
+        breakout_pressure = opposite_flow and (opposite_momentum or breakout_flag)
         event_block = get_economic_risk().block_new_entries
         ready = inside and volume_ok and flow_ok and momentum_ok and candle_ok and not event_block
         passed_checks = sum((inside, volume_ok, flow_ok, momentum_ok, candle_ok, not event_block))
@@ -733,17 +743,28 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
             ]), f"Armed {side.lower()} plan reached confirmation")
         if inside and not bool(plan.get("zone_alerted", False)):
             plan["zone_alerted"] = True
+            if flow_ok and (momentum_ok or candle_ok):
+                zone_state = "REVERSAL TEST"
+                zone_action = "Reversal evidence is developing. Still require every checklist item and event clearance before an entry alert."
+            elif breakout_pressure:
+                zone_state = "BREAKOUT PRESSURE"
+                zone_action = "Do not fade this level. Wait for a close beyond it and a retest before considering the breakout direction."
+            else:
+                zone_state = "UNRESOLVED TEST"
+                zone_action = "The level is being tested without directional agreement. Wait for reversal confirmation or a close-and-retest breakout."
+            plan["zone_state"] = zone_state
             plans[side] = plan
             set_armed_trade_plans(signal.symbol, plans)
             status = "EVENT BLOCK" if event_block else "NOT YET CONFIRMED"
             return AlertDecision(True, "ARMED_PLAN_ZONE", signal.symbol, "\n".join([
                 f"🔔 {signal.symbol} ENTERED {side} ZONE — {status}", "",
+                f"Zone behavior: {'🟢' if zone_state == 'REVERSAL TEST' else '🔴' if zone_state == 'BREAKOUT PRESSURE' else '🟡'} {zone_state}",
                 f"Price: {price_text(signal.price)}", f"Zone: {price_text(zone_low)} to {price_text(zone_high)}",
                 f"Volume: {analysis.relative_volume:.2f}× ({'passed' if volume_ok else 'missing'})",
                 f"Taker: {taker:+.1f}% | Large: {large:+.1f}%", f"Invalidation: {price_text(plan['stop'])}",
                 f"Reversal candle: {'🟢 CONFIRMED' if candle_ok else '🟡 WAITING'}",
                 f"Entry checklist: {'🟢' if passed_checks == 6 else '🟡'} {passed_checks}/6 checks passed",
-                "", "Wait for the required reversal and confirmation; entering the zone alone is not an entry.",
+                "", f"Action: {zone_action}",
             ]), f"Armed {side.lower()} plan entered zone")
         distance = 0.0 if inside else min(abs(signal.price - zone_low), abs(signal.price - zone_high)) / max(signal.price, 1e-9) * 100.0
         approach_distance = {"SCALPING": 0.35, "DAY": 0.75, "SWING": 1.50}.get(profile.horizon, 0.75)
