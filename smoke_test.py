@@ -199,6 +199,11 @@ def main() -> None:
                 "change": 2.0,
                 "live": True,
             },
+            "coinbase_premium": {
+                "btc": 0.125,
+                "eth": -0.135,
+                "live": True,
+            },
             "derivatives": {
                 "funding_rate": 0.0006,
                 "funding_label": "CROWDED LONGS",
@@ -228,6 +233,8 @@ def main() -> None:
     message = build_scan_message(signal, context)
     decision = evaluate_signal_alert(signal, context)
     assert "Fear & Greed: 62" in message
+    assert "BTC Coinbase Premium: +0.125% — US BUYING" in message
+    assert "ETH Coinbase Premium: -0.135% — US SELLING" in message
     assert "Funding: +0.0600%" in message
     assert "Derivatives source: Offline test" in message
     assert "OI change: +1.20% (5m), +6.50% (1h)" in message

@@ -43,6 +43,8 @@ FEAR_GREED_URL = "https://api.alternative.me/fng/?limit=2&format=json"
 
 DERIVATIVES_CACHE: dict[str, dict[str, Any]] = {}
 DERIVATIVES_CACHE_SECONDS = 60
+COINBASE_PREMIUM_CACHE: dict[str, Any] = {"data": None, "timestamp": 0.0}
+COINBASE_PREMIUM_CACHE_SECONDS = 60
 
 COINGECKO_GLOBAL_URL = (
     "https://api.coingecko.com/api/v3/global"
@@ -95,6 +97,10 @@ class MarketContext:
     fear_greed_label: str
     fear_greed_change: float
     fear_greed_live: bool
+
+    btc_coinbase_premium: float
+    eth_coinbase_premium: float
+    coinbase_premium_live: bool
 
     funding_rate: float
     funding_label: str
@@ -233,6 +239,31 @@ async def fetch_json(
         "JSON provider failed after three attempts: "
         f"{last_error}"
     )
+
+
+async def fetch_coinbase_premiums() -> dict[str, Any]:
+    cached = COINBASE_PREMIUM_CACHE.get("data")
+    if isinstance(cached, dict) and time.time() - float(COINBASE_PREMIUM_CACHE.get("timestamp", 0.0)) < COINBASE_PREMIUM_CACHE_SECONDS:
+        return dict(cached)
+
+    async def premium(asset: str) -> float:
+        coinbase, okx = await asyncio.gather(
+            fetch_json(f"https://api.exchange.coinbase.com/products/{asset}-USD/ticker"),
+            fetch_json(f"{OKX_BASE_URL}/api/v5/market/ticker?instId={asset}-USDT"),
+        )
+        okx_rows = okx.get("data", [])
+        if not okx_rows:
+            raise RuntimeError(f"OKX returned no {asset} spot ticker")
+        coinbase_mid = (float(coinbase["bid"]) + float(coinbase["ask"])) / 2.0
+        okx_mid = (float(okx_rows[0]["bidPx"]) + float(okx_rows[0]["askPx"])) / 2.0
+        if okx_mid <= 0:
+            raise RuntimeError(f"Invalid OKX {asset} midpoint")
+        return (coinbase_mid / okx_mid - 1.0) * 100.0
+
+    btc, eth = await asyncio.gather(premium("BTC"), premium("ETH"))
+    result = {"btc": round(btc, 4), "eth": round(eth, 4), "live": True}
+    COINBASE_PREMIUM_CACHE.update({"data": dict(result), "timestamp": time.time()})
+    return result
 
 async def fetch_text(
     url: str,
@@ -948,6 +979,7 @@ async def get_market_context_data(
     derivatives_task = asyncio.create_task(
         fetch_derivatives_context(selected_symbol)
     )
+    coinbase_premium_task = asyncio.create_task(fetch_coinbase_premiums())
     news_task = asyncio.create_task(fetch_news_intelligence())
 
     results = await asyncio.gather(
@@ -957,6 +989,7 @@ async def get_market_context_data(
         vix_task,
         fear_greed_task,
         derivatives_task,
+        coinbase_premium_task,
         news_task,
         return_exceptions=True,
     )
@@ -968,6 +1001,7 @@ async def get_market_context_data(
         "vix",
         "fear_greed",
         "derivatives",
+        "coinbase_premium",
         "news",
     ]
 
@@ -1692,6 +1726,9 @@ def build_market_context(
     fear_greed_label = "NEUTRAL"
     fear_greed_change = 0.0
     fear_greed_live = False
+    btc_coinbase_premium = 0.0
+    eth_coinbase_premium = 0.0
+    coinbase_premium_live = False
 
     funding_rate = 0.0
     funding_label = "UNAVAILABLE"
@@ -1917,6 +1954,22 @@ def build_market_context(
         fear_greed_change = float(fear_greed.get("change", 0.0))
         fear_greed_live = bool(fear_greed.get("live", True))
 
+    coinbase_premium = context_data.get("coinbase_premium", {})
+    if coinbase_premium:
+        btc_coinbase_premium = float(coinbase_premium.get("btc", 0.0))
+        eth_coinbase_premium = float(coinbase_premium.get("eth", 0.0))
+        coinbase_premium_live = bool(coinbase_premium.get("live", True))
+        if btc_coinbase_premium >= 0.10:
+            total_adjustment += 1.5
+            reasons.append("Positive Coinbase BTC premium signals stronger US spot demand.")
+        elif btc_coinbase_premium <= -0.10:
+            total_adjustment -= 1.5
+            warnings.append("Negative Coinbase BTC premium signals weaker US spot demand.")
+        if eth_coinbase_premium >= 0.10:
+            total_adjustment += 0.5
+        elif eth_coinbase_premium <= -0.10:
+            total_adjustment -= 0.5
+
     derivatives = context_data.get("derivatives", {})
     if derivatives:
         funding_rate = float(derivatives.get("funding_rate", 0.0))
@@ -2056,6 +2109,9 @@ def build_market_context(
         fear_greed_label=fear_greed_label,
         fear_greed_change=fear_greed_change,
         fear_greed_live=fear_greed_live,
+        btc_coinbase_premium=btc_coinbase_premium,
+        eth_coinbase_premium=eth_coinbase_premium,
+        coinbase_premium_live=coinbase_premium_live,
         funding_rate=funding_rate,
         funding_label=funding_label,
         open_interest_value=open_interest_value,

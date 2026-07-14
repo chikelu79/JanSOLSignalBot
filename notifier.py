@@ -559,6 +559,15 @@ def format_market_context(context: Any | None) -> list[str]:
     market_change = float(getattr(context, "crypto_market_change_24h", 0.0))
     vix_value = float(getattr(context, "vix_value", 0.0))
     fear_value = float(getattr(context, "fear_greed_value", 50.0))
+    btc_premium = float(getattr(context, "btc_coinbase_premium", 0.0))
+    eth_premium = float(getattr(context, "eth_coinbase_premium", 0.0))
+    premium_live = bool(getattr(context, "coinbase_premium_live", False))
+
+    def premium_line(asset: str, value: float) -> str:
+        label = "US BUYING" if value >= 0.10 else "US SELLING" if value <= -0.10 else "BALANCED"
+        icon = "🟢" if value >= 0.10 else "🔴" if value <= -0.10 else "🟡"
+        availability = "LIVE" if premium_live else "UNAVAILABLE"
+        return f"{icon} {asset} Coinbase Premium: {value:+.3f}% — {label} (directional at ±0.10%; {availability})"
     funding_icon = "🔴" if abs(funding_rate) >= 0.0005 else "🟡" if abs(funding_rate) >= 0.0001 else "🟢"
     oi_icon = "🟡" if abs(oi_1h) >= 5.0 else "🔵"
     liquidation_pressure = str(getattr(context, "liquidation_pressure", "UNAVAILABLE"))
@@ -579,6 +588,8 @@ def format_market_context(context: Any | None) -> list[str]:
         f"({getattr(context, 'btc_score', 0):+.1f}; directional at ±{profile.watch_threshold:.0f})",
         f"{direction_emoji(getattr(context, 'eth_direction', 'UNKNOWN'))} ETH: {getattr(context, 'eth_direction', 'UNKNOWN')} "
         f"({getattr(context, 'eth_score', 0):+.1f}; directional at ±{profile.watch_threshold:.0f})",
+        premium_line("BTC", btc_premium),
+        premium_line("ETH", eth_premium),
         "",
         f"🔵 BTC correlation: {correlation:.2f} ({correlation_regime}; high ≥ 0.70)",
         f"🔵 BTC dominance: {getattr(context, 'btc_dominance', 0):.2f}% (altcoin headwind ≥ 58%; support ≤ 52%)",
