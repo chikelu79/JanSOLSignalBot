@@ -222,8 +222,25 @@ def main() -> None:
     stored_watch = get_early_opportunities()[stored_key]
     assert stored_watch["target_1r"] > stored_watch["zone_high"]
     assert stored_watch["target_2r"] > stored_watch["target_1r"]
+    original_watch_id = stored_watch["id"]
+    original_created_at = stored_watch["created_at"]
+    evaluate_early_opportunity_alert(
+        signal,
+        derivatives={"taker_flow_imbalance": 20.0, "large_flow_imbalance": 40.0},
+    )
+    preserved_watch = get_early_opportunities()[stored_key]
+    assert preserved_watch["id"] == original_watch_id
+    assert preserved_watch["created_at"] == original_created_at
     remove_early_opportunity(stored_key)
+    signal.symbol = "INVALIDUSDT"
+    signal.price = 73.0
+    evaluate_early_opportunity_alert(
+        signal,
+        derivatives={"taker_flow_imbalance": 20.0, "large_flow_imbalance": 40.0},
+    )
+    assert "INVALIDUSDT:5m:LONG" not in get_early_opportunities()
     signal.symbol = "WEAKUSDT"
+    signal.price = 75.1
     signal.analyses["5m"].relative_volume = 0.5
     weak_countertrend_alert = evaluate_early_opportunity_alert(
         signal,

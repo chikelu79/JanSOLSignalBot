@@ -371,6 +371,7 @@ def evaluate_early_opportunity_alert(
     now = time.time()
     expiry_seconds = {"SCALPING": 30 * 60, "DAY": 2 * 60 * 60, "SWING": 12 * 60 * 60}[profile.horizon]
     fresh_blocks: dict[str, list[str]] = {}
+    stored_opportunities = get_early_opportunities()
     for index, line in enumerate(radar):
         if " EARLY LONG WATCH" not in line and " EARLY SHORT WATCH" not in line:
             continue
@@ -396,19 +397,25 @@ def evaluate_early_opportunity_alert(
         midpoint = (zone_low + zone_high) / 2.0
         risk = midpoint - invalidation if side == "LONG" else invalidation - midpoint
         direction = 1.0 if side == "LONG" else -1.0
-        set_early_opportunity(opportunity_key, {
-            "id": f"{opportunity_key}:{int(now)}",
-            "symbol": signal.symbol, "interval": interval, "side": side,
-            "zone_low": zone_low, "zone_high": zone_high,
-            "invalidation": invalidation,
-            "created_at": now, "expires_at": now + expiry_seconds,
-            "relationship": relationship, "triggers": triggers,
-            "profile": f"{profile.horizon} / {profile.risk_style}",
-            "zone_reached": False,
-            "target_1r": midpoint + direction * risk if risk > 0 else 0.0,
-            "target_2r": midpoint + direction * risk * 2.0 if risk > 0 else 0.0,
-            "target_1r_hit": False, "target_2r_hit": False,
-        })
+        invalid_at_creation = (
+            (side == "LONG" and signal.price <= invalidation)
+            or (side == "SHORT" and signal.price >= invalidation)
+            or risk <= 0
+        )
+        if opportunity_key not in stored_opportunities and not invalid_at_creation:
+            set_early_opportunity(opportunity_key, {
+                "id": f"{opportunity_key}:{int(now)}",
+                "symbol": signal.symbol, "interval": interval, "side": side,
+                "zone_low": zone_low, "zone_high": zone_high,
+                "invalidation": invalidation,
+                "created_at": now, "expires_at": now + expiry_seconds,
+                "relationship": relationship, "triggers": triggers,
+                "profile": f"{profile.horizon} / {profile.risk_style}",
+                "zone_reached": False,
+                "target_1r": midpoint + direction * risk,
+                "target_2r": midpoint + direction * risk * 2.0,
+                "target_1r_hit": False, "target_2r_hit": False,
+            })
         fresh_blocks[opportunity_key] = block
 
     taker_flow = float(radar_context.get("taker_flow_imbalance", 0.0) if isinstance(radar_context, dict) else getattr(radar_context, "taker_flow_imbalance", 0.0))
