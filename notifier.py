@@ -678,15 +678,17 @@ def create_structural_trade_plans(signal: MarketSignal) -> dict[str, dict[str, A
         supports = [(price - max(float(a.atr), price * 0.005), i, a) for i, a in analyses]
     if not resistances:
         resistances = [(price + max(float(a.atr), price * 0.005), i, a) for i, a in analyses]
+    bullish_continuation = signal.score >= 20.0 or any(float(a.score) >= 20.0 for _, a in analyses)
+    bearish_continuation = signal.score <= -20.0 or any(float(a.score) <= -20.0 for _, a in analyses)
     selected = {
         "LONG": (
             max(broken_resistances, key=lambda item: item[0])
-            if signal.score >= 20.0 and broken_resistances
+            if bullish_continuation and broken_resistances
             else max(supports, key=lambda item: item[0])
         ),
         "SHORT": (
             min(broken_supports, key=lambda item: item[0])
-            if signal.score <= -20.0 and broken_supports
+            if bearish_continuation and broken_supports
             else min(resistances, key=lambda item: item[0])
         ),
     }
@@ -961,14 +963,14 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
     ]
     long_level, long_interval, long_analysis = (
         max(broken_resistances, key=lambda item: item[0])
-        if signal.score >= 20.0 and broken_resistances
+        if (signal.score >= 20.0 or any(float(a.score) >= 20.0 for _, a in analyses)) and broken_resistances
         else
         max(supports, key=lambda item: item[0])
         if supports else min(all_supports, key=lambda item: abs(item[0] - price))
     )
     short_level, short_interval, short_analysis = (
         min(broken_supports, key=lambda item: item[0])
-        if signal.score <= -20.0 and broken_supports
+        if (signal.score <= -20.0 or any(float(a.score) <= -20.0 for _, a in analyses)) and broken_supports
         else
         min(resistances, key=lambda item: item[0])
         if resistances else min(all_resistances, key=lambda item: abs(item[0] - price))
@@ -1066,9 +1068,14 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
         else:
             status = "🟡 WAITING FOR PRICE"
         icon = "🟢" if side == "LONG" else "🔴"
+        breakout_retest = (
+            (side == "LONG" and any(level == item[0] and interval == item[1] for item in broken_resistances))
+            or (side == "SHORT" and any(level == item[0] and interval == item[1] for item in broken_supports))
+        )
+        structure_label = "breakout retest" if breakout_retest else f"{interval} structure"
         rows = [
             f"{icon} {side} PLAN — {status}",
-            f"Zone: {price_text(zone_low)} to {price_text(zone_high)} ({distance:.2f}% away; {interval} structure)",
+            f"Zone: {price_text(zone_low)} to {price_text(zone_high)} ({distance:.2f}% away; {structure_label})",
             f"Invalidation: {price_text(stop)}",
             f"Trigger required: {trigger}",
             f"Reversal candle: {'🟢 CONFIRMED' if candle_ok else '🟡 WAITING'}",
