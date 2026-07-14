@@ -295,6 +295,66 @@ def evidence_icon(reason: str) -> str:
     return "🔵"
 
 
+def build_balanced_evidence(signal: MarketSignal) -> list[str]:
+    profile = get_profile(get_trading_horizon(), get_risk_style())
+    order = list(profile.primary_timeframes + profile.confirmation_timeframes)
+    order.extend(interval for interval in ("5m", "15m", "1h", "4h", "8h", "1d") if interval not in order)
+    evidence: list[str] = []
+    for interval in order:
+        analysis = signal.analyses.get(interval)
+        if analysis is None:
+            continue
+        bullish: list[str] = []
+        bearish: list[str] = []
+        for reason in analysis.reasons:
+            formatted = f"{interval}: {reason}"
+            icon = evidence_icon(formatted)
+            if icon == "🟢" and formatted not in bullish:
+                bullish.append(formatted)
+            elif icon == "🔴" and formatted not in bearish:
+                bearish.append(formatted)
+        structural_bullish = [
+            f"{interval}: Price is above EMA 20",
+            f"{interval}: EMA 20 is above EMA 50",
+            f"{interval}: MACD is above its signal line",
+            f"{interval}: RSI stack is bullish (6 > 12 > 24)",
+        ]
+        structural_bearish = [
+            f"{interval}: Price is below EMA 20",
+            f"{interval}: EMA 20 is below EMA 50",
+            f"{interval}: MACD is below its signal line",
+            f"{interval}: RSI stack is bearish (6 < 12 < 24)",
+        ]
+        checks = [
+            (analysis.price > analysis.ema20, structural_bullish[0], structural_bearish[0]),
+            (analysis.ema20 > analysis.ema50, structural_bullish[1], structural_bearish[1]),
+            (analysis.macd > analysis.macd_signal, structural_bullish[2], structural_bearish[2]),
+        ]
+        for condition, bull_text, bear_text in checks:
+            target = bullish if condition else bearish
+            value = bull_text if condition else bear_text
+            if value not in target:
+                target.append(value)
+        if analysis.rsi_6 > analysis.rsi_12 > analysis.rsi_24:
+            bullish.append(structural_bullish[3])
+        elif analysis.rsi_6 < analysis.rsi_12 < analysis.rsi_24:
+            bearish.append(structural_bearish[3])
+        selected = []
+        if analysis.score < 0:
+            selected.extend([("🔴", bearish[0])] if bearish else [])
+            selected.extend([("🟢", bullish[0])] if bullish else [])
+        else:
+            selected.extend([("🟢", bullish[0])] if bullish else [])
+            selected.extend([("🔴", bearish[0])] if bearish else [])
+        for icon, item in selected:
+            line = f"• {icon} {item}"
+            if line not in evidence:
+                evidence.append(line)
+            if len(evidence) >= 8:
+                return evidence
+    return evidence
+
+
 def format_market_context(context: Any | None) -> list[str]:
     if context is None:
         return ["Macro context: unavailable"]
@@ -634,9 +694,9 @@ def build_scan_message(signal: MarketSignal, context: Any | None = None) -> str:
     ]
     if signal.trade_plan:
         lines.extend(["", "TRADE MAP", *format_trade_plan(signal.trade_plan)])
-    clean_reasons = unique_items(reasons, 8)
-    if clean_reasons:
-        lines.extend(["", "BULLISH / BEARISH EVIDENCE", *[f"• {evidence_icon(item)} {item}" for item in clean_reasons]])
+    balanced_evidence = build_balanced_evidence(signal)
+    if balanced_evidence:
+        lines.extend(["", "BULLISH / BEARISH EVIDENCE", *balanced_evidence])
     clean_warnings = unique_items(warnings, 6)
     if clean_warnings:
         lines.extend(["", "RISKS", *[f"• {item}" for item in clean_warnings]])

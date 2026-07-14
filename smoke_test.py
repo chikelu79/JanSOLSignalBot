@@ -12,6 +12,7 @@ from lunar_context import get_lunar_context
 from market_context import build_market_context
 from notifier import (
     build_active_setups_message,
+    build_balanced_evidence,
     build_confidence_breakdown,
     build_early_opportunity_radar,
     build_scan_message,
@@ -139,6 +140,18 @@ def main() -> None:
     assert "RSI 6 crossed above RSI 12" in radar[1]
     assert "Stochastic RSI crossed bullish from oversold" in radar[1]
     assert "MFI money flow turned upward" in radar[1]
+    signal.analyses = {}
+    signal.analyses = {
+        "15m": SimpleNamespace(
+            score=-70.0, reasons=["Supertrend is bullish", "RSI 12 crossed below RSI 24"],
+            price=74.0, ema20=75.0, ema50=76.0, macd=-0.3, macd_signal=-0.1,
+            rsi_6=35.0, rsi_12=40.0, rsi_24=45.0,
+        )
+    }
+    balanced = build_balanced_evidence(signal)
+    assert any("🔴" in line for line in balanced)
+    assert any("🟢" in line for line in balanced)
+    assert balanced[0].startswith("• 🔴")
     signal.analyses = {}
     context = build_market_context(
         signal,
