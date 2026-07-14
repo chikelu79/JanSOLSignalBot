@@ -181,28 +181,47 @@ def format_market_context(context: Any | None) -> list[str]:
         return ["Macro context: unavailable"]
     fear_live = bool(getattr(context, "fear_greed_live", False))
     fear_suffix = "LIVE" if fear_live else "FALLBACK"
+    funding_rate = float(getattr(context, "funding_rate", 0.0))
+    funding_effect = "bearish crowding risk" if funding_rate >= 0.0005 else "bullish squeeze risk" if funding_rate <= -0.0005 else "neutral"
+    oi_5m = float(getattr(context, "open_interest_change_5m", 0.0))
+    oi_1h = float(getattr(context, "open_interest_change_1h", 0.0))
+    oi_regime = "HIGH EXPANSION" if oi_1h >= 5.0 else "HIGH CONTRACTION" if oi_1h <= -5.0 else "NORMAL"
+    long_liq = float(getattr(context, "long_liquidations_1h", 0.0))
+    short_liq = float(getattr(context, "short_liquidations_1h", 0.0))
+    oi_value = float(getattr(context, "open_interest_value", 0.0))
+    liq_intensity = (long_liq + short_liq) / oi_value * 100.0 if oi_value else 0.0
+    liq_regime = "HIGH" if liq_intensity >= 0.10 else "ELEVATED" if liq_intensity >= 0.02 else "LOW"
+    correlation = float(getattr(context, "btc_correlation", 0.0))
+    correlation_regime = "HIGH" if abs(correlation) >= 0.70 else "MEDIUM" if abs(correlation) >= 0.40 else "LOW"
+    market_change = float(getattr(context, "crypto_market_change_24h", 0.0))
+    vix_value = float(getattr(context, "vix_value", 0.0))
+    fear_value = float(getattr(context, "fear_greed_value", 50.0))
+    funding_icon = "🔴" if abs(funding_rate) >= 0.0005 else "🟡" if abs(funding_rate) >= 0.0001 else "🟢"
+    oi_icon = "🟡" if abs(oi_1h) >= 5.0 else "🔵"
+    liquidation_pressure = str(getattr(context, "liquidation_pressure", "UNAVAILABLE"))
+    liquidation_icon = "🟢" if liquidation_pressure == "SHORT SQUEEZE" else "🔴" if liquidation_pressure == "LONG FLUSH" else "🟡" if liq_regime != "LOW" else "🔵"
     return [
-        f"BTC: {getattr(context, 'btc_direction', 'UNKNOWN')} "
+        f"{direction_emoji(getattr(context, 'btc_direction', 'UNKNOWN'))} BTC: {getattr(context, 'btc_direction', 'UNKNOWN')} "
         f"({getattr(context, 'btc_score', 0):+.1f})",
-        f"ETH: {getattr(context, 'eth_direction', 'UNKNOWN')} "
+        f"{direction_emoji(getattr(context, 'eth_direction', 'UNKNOWN'))} ETH: {getattr(context, 'eth_direction', 'UNKNOWN')} "
         f"({getattr(context, 'eth_score', 0):+.1f})",
-        f"BTC correlation: {getattr(context, 'btc_correlation', 0):.2f}",
-        f"BTC dominance: {getattr(context, 'btc_dominance', 0):.2f}%",
-        f"Crypto market 24h: {getattr(context, 'crypto_market_change_24h', 0):+.2f}%",
-        f"VIX: {getattr(context, 'vix_value', 0):.2f} "
-        f"({getattr(context, 'vix_regime', 'UNKNOWN')})",
-        f"Fear & Greed: {getattr(context, 'fear_greed_value', 50):.0f} "
-        f"({getattr(context, 'fear_greed_label', 'NEUTRAL')}, {fear_suffix})",
-        f"Funding: {getattr(context, 'funding_rate', 0.0) * 100:+.4f}% "
+        f"🔵 BTC correlation: {correlation:.2f} ({correlation_regime}; high ≥ 0.70)",
+        f"🔵 BTC dominance: {getattr(context, 'btc_dominance', 0):.2f}%",
+        f"{'🟢' if market_change >= 1 else '🔴' if market_change <= -1 else '🟡'} Crypto market 24h: {market_change:+.2f}% (strong move at ±3%)",
+        f"{'🔴' if vix_value >= 25 else '🟡' if vix_value >= 18 else '🟢'} VIX: {vix_value:.2f} "
+        f"({getattr(context, 'vix_regime', 'UNKNOWN')}; risk stress usually ≥ 25)",
+        f"{'🔴' if fear_value < 25 else '🟢' if fear_value > 75 else '🟡'} Fear & Greed: {fear_value:.0f} "
+        f"({getattr(context, 'fear_greed_label', 'NEUTRAL')}, {fear_suffix}; extreme fear < 25, greed > 75)",
+        f"{funding_icon} Funding: {funding_rate * 100:+.4f}% "
         f"({getattr(context, 'funding_label', 'UNAVAILABLE')}, "
-        f"{getattr(context, 'derivatives_provider', 'UNKNOWN')})",
-        f"Open interest: ${getattr(context, 'open_interest_value', 0.0):,.0f}",
-        f"OI change: {getattr(context, 'open_interest_change_5m', 0.0):+.2f}% (5m), "
-        f"{getattr(context, 'open_interest_change_1h', 0.0):+.2f}% (1h)",
-        f"Liquidations 1h: longs ${getattr(context, 'long_liquidations_1h', 0.0):,.0f} / "
-        f"shorts ${getattr(context, 'short_liquidations_1h', 0.0):,.0f}",
-        f"Liquidation pressure: {getattr(context, 'liquidation_pressure', 'UNAVAILABLE')}",
-        f"Macro bias: {getattr(context, 'macro_bias', 'NEUTRAL')} "
+        f"{funding_effect}; crowded at ±0.0500%)",
+        f"🔵 Open interest: ${getattr(context, 'open_interest_value', 0.0):,.0f}",
+        f"{oi_icon} OI change: {oi_5m:+.2f}% (5m), {oi_1h:+.2f}% (1h) — {oi_regime} (high at ±5%/1h)",
+        f"🔵 Liquidations 1h: longs ${long_liq:,.0f} / shorts ${short_liq:,.0f}",
+        f"{liquidation_icon} Liquidation pressure: {liquidation_pressure} — "
+        f"{liq_regime} intensity {liq_intensity:.3f}% of OI (high ≥ 0.10%)",
+        f"🔵 Derivatives source: {getattr(context, 'derivatives_provider', 'UNKNOWN')}",
+        f"{direction_emoji('LONG' if getattr(context, 'macro_bias', 'NEUTRAL') == 'BULLISH' else 'SHORT' if getattr(context, 'macro_bias', 'NEUTRAL') == 'BEARISH' else 'WAIT')} Macro bias: {getattr(context, 'macro_bias', 'NEUTRAL')} "
         f"({getattr(context, 'macro_score', 0):+.1f})",
         f"Context adjustment: {getattr(context, 'score_adjustment', 0):+.1f}",
     ]
@@ -431,9 +450,9 @@ def build_scan_message(signal: MarketSignal, context: Any | None = None) -> str:
         f"Caution: {session.caution}",
         "",
         "ECONOMIC CALENDAR",
-        f"Risk: {economic.status}",
+        f"{'🔴' if economic.block_new_entries else '🟡' if economic.status == 'UPCOMING' else '🟢'} Risk: {economic.status}",
         economic.detail,
-        f"Lunar: {lunar.label} — {lunar.detail}",
+        f"{'🌑' if lunar.phase == 'NEW MOON' else '🌕'} Lunar: {lunar.label} — {lunar.detail}",
         "",
         "TIMEFRAMES",
         *format_timeframes(signal),
@@ -525,6 +544,9 @@ def build_derivatives_alert_message(
         "DERIVATIVES_EXIT": f"🚪 {signal.symbol} DERIVATIVES EXIT WARNING",
         "LIQUIDATION_WAVE": f"🌊 {signal.symbol} LIQUIDATION WAVE",
     }
+    oi_value = float(derivatives.get("open_interest_value", 0.0))
+    liquidation_total = float(derivatives.get("long_liquidations_1h", 0.0)) + float(derivatives.get("short_liquidations_1h", 0.0))
+    liquidation_intensity = liquidation_total / oi_value * 100.0 if oi_value else 0.0
     return "\n".join(
         [
             headings.get(alert_type, f"⚠️ {signal.symbol} DERIVATIVES ALERT"),
@@ -539,6 +561,7 @@ def build_derivatives_alert_message(
             f"Liquidations 1h: longs ${float(derivatives.get('long_liquidations_1h', 0.0)):,.0f} / "
             f"shorts ${float(derivatives.get('short_liquidations_1h', 0.0)):,.0f}",
             f"Liquidation pressure: {derivatives.get('liquidation_pressure', 'UNAVAILABLE')}",
+            f"Intensity: {liquidation_intensity:.3f}% of OI (high ≥ 0.10%)",
             f"Provider: {derivatives.get('provider', 'UNKNOWN')}",
             "",
             f"Action: {action}",
@@ -636,7 +659,8 @@ def evaluate_derivatives_alert(
                 "Funding reached a crowded threshold",
             )
 
-    if liquidation_total >= 250000.0:
+    liquidation_intensity = liquidation_total / float(derivatives.get("open_interest_value", 0.0)) * 100.0 if float(derivatives.get("open_interest_value", 0.0)) else 0.0
+    if liquidation_intensity >= 0.10:
         key = make_alert_key(symbol, "LIQUIDATION_WAVE")
         if alert_allowed(key, DERIVATIVES_ALERT_COOLDOWN_SECONDS):
             mark_alert_sent(key)

@@ -112,7 +112,7 @@ def build_calendar_message(now: datetime | None = None) -> str:
     lines = [
         "📅 ECONOMIC CALENDAR",
         "",
-        f"Current risk: {risk.status}",
+        f"{'🔴' if risk.block_new_entries else '🟡' if risk.status == 'UPCOMING' else '🟢'} Current risk: {risk.status}",
         risk.detail,
         "",
         "NEXT HIGH-IMPACT EVENTS",
@@ -125,7 +125,7 @@ def build_calendar_message(now: datetime | None = None) -> str:
     lines.extend([
         "",
         "LUNAR CONTEXT",
-        f"Status: {lunar.label}",
+        f"{'🌑' if lunar.phase == 'NEW MOON' else '🌕'} Status: {lunar.label}",
         lunar.detail,
         "",
         "Times: America/New_York. Schedule sources: BLS, Federal Reserve and USNO.",

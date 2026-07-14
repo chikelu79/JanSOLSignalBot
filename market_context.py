@@ -738,7 +738,8 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
             elif detail.get("posSide") == "short":
                 short_liquidations_1h += notional
     total_liquidations = long_liquidations_1h + short_liquidations_1h
-    if total_liquidations < 10000:
+    liquidation_intensity = total_liquidations / current_value * 100.0 if current_value else 0.0
+    if liquidation_intensity < 0.02:
         liquidation_pressure = "LOW"
     elif long_liquidations_1h >= short_liquidations_1h * 1.5:
         liquidation_pressure = "LONG FLUSH"
@@ -759,6 +760,7 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
         "long_liquidations_1h": long_liquidations_1h,
         "short_liquidations_1h": short_liquidations_1h,
         "liquidation_pressure": liquidation_pressure,
+        "liquidation_intensity": liquidation_intensity,
     }
 
 
