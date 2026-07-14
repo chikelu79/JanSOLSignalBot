@@ -292,6 +292,9 @@ def main() -> None:
     )
     assert "QUICK TRADE VIEW" in trade_brief
     assert "KEY LEVEL MAP" not in trade_brief
+    assert "PLANNED LEVELS" in trade_brief
+    assert "LONG PLAN" in trade_brief and "SHORT PLAN" in trade_brief
+    assert "Zone:" in trade_brief and "Invalidation:" in trade_brief
     assert "/trade" in trade_brief and "/scan" in trade_brief and "/health" in trade_brief
     tactical = notifier_module.AlertDecision(True, "ARMED_PLAN_READY", "SOLUSDT", "entry", "ready")
     whale = notifier_module.AlertDecision(True, "LARGE_TRADE_FLOW", "SOLUSDT", "flow", "large flow")

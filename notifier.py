@@ -1171,8 +1171,33 @@ def build_trade_brief(signal: MarketSignal, context: Any | None = None) -> str:
     """Return the decision-first portion of the planner for quick Telegram use."""
     dashboard = build_trade_dashboard(signal, context)
     decision_section = dashboard.split("\nKEY LEVEL MAP", 1)[0].strip()
+    dashboard_lines = dashboard.splitlines()
+
+    def compact_plan(marker: str) -> list[str]:
+        try:
+            start = next(index for index, line in enumerate(dashboard_lines) if marker in line)
+        except StopIteration:
+            return []
+        block: list[str] = []
+        for line in dashboard_lines[start:]:
+            if not line.strip() and block:
+                break
+            if (
+                line.startswith(("🟢 LONG PLAN", "🔴 SHORT PLAN", "Zone:", "Invalidation:", "Trigger required:", "Reversal candle:", "Volume / flow:"))
+            ):
+                block.append(line)
+        return block
+
+    compact_levels = [
+        *compact_plan("LONG PLAN"),
+        "",
+        *compact_plan("SHORT PLAN"),
+    ]
     return "\n".join([
         decision_section.replace("TRADE PLANNER", "QUICK TRADE VIEW", 1),
+        "",
+        "PLANNED LEVELS",
+        *compact_levels,
         "",
         "DETAILS",
         "• /trade — full plans, key levels, stops and targets",
