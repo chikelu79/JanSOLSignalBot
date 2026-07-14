@@ -28,6 +28,7 @@ ECONOMIC_ALERT_COOLDOWN_SECONDS = 6 * 60 * 60
 SESSION_ALERT_COOLDOWN_SECONDS = 4 * 60 * 60
 EARLY_OPPORTUNITY_COOLDOWN_SECONDS = 20 * 60
 RAPID_SCORE_CHANGE = 22.0
+MFI_REVERSAL_MIN_CHANGE = 3.0
 
 last_alert_times: dict[str, float] = {}
 last_signal_hashes: dict[str, str] = {}
@@ -240,9 +241,9 @@ def build_early_opportunity_radar(signal: MarketSignal, context: Any | None = No
         mfi = float(getattr(analysis, "mfi", 50.0))
         previous_mfi = float(getattr(analysis, "previous_mfi", mfi))
         two_back_mfi = float(getattr(analysis, "two_back_mfi", previous_mfi))
-        if mfi - previous_mfi >= 1.0 and previous_mfi <= two_back_mfi and previous_mfi <= 55.0:
+        if mfi - previous_mfi >= MFI_REVERSAL_MIN_CHANGE and previous_mfi <= two_back_mfi and previous_mfi <= 55.0:
             bullish.append(f"MFI money flow turned upward ({previous_mfi:.1f}→{mfi:.1f})")
-        elif previous_mfi - mfi >= 1.0 and previous_mfi >= two_back_mfi and previous_mfi >= 45.0:
+        elif previous_mfi - mfi >= MFI_REVERSAL_MIN_CHANGE and previous_mfi >= two_back_mfi and previous_mfi >= 45.0:
             bearish.append(f"MFI money flow turned downward ({previous_mfi:.1f}→{mfi:.1f})")
         if not bullish and not bearish:
             if analysis.rsi < 28:

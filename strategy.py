@@ -910,10 +910,10 @@ def analyze_timeframe(
             "MFI is overbought"
         )
 
-    if mfi - previous_mfi >= 1.0 and previous_mfi <= two_back_mfi and previous_mfi <= 55.0:
+    if mfi - previous_mfi >= 3.0 and previous_mfi <= two_back_mfi and previous_mfi <= 55.0:
         score += 5
         reasons.append(f"MFI money flow turned upward ({previous_mfi:.1f} → {mfi:.1f})")
-    elif previous_mfi - mfi >= 1.0 and previous_mfi >= two_back_mfi and previous_mfi >= 45.0:
+    elif previous_mfi - mfi >= 3.0 and previous_mfi >= two_back_mfi and previous_mfi >= 45.0:
         score -= 5
         reasons.append(f"MFI money flow turned downward ({previous_mfi:.1f} → {mfi:.1f})")
 
