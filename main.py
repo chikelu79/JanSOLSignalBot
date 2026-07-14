@@ -836,7 +836,8 @@ def arm_plan_records(signal: MarketSignal, sides: tuple[str, ...]) -> dict[str, 
     return {
         side: {
             **generated[side], "created_at": now, "expires_at": now + expiry,
-            "event_plan": False, "zone_state": "WATCHING",
+            "event_plan": False,
+            "zone_state": str(generated[side].get("zone_state", "WATCHING")),
             "approach_alerted": False, "zone_alerted": False, "ready_alerted": False,
         }
         for side in sides if side in generated
@@ -851,12 +852,26 @@ def auto_plan_fingerprint(plans: dict[str, Any]) -> str:
 
 
 def maybe_auto_arm_plans(signal: MarketSignal) -> bool:
-    if not is_auto_plan_enabled() or get_active_setups().get(signal.symbol) or get_armed_trade_plans().get(signal.symbol):
+    if not is_auto_plan_enabled() or get_active_setups().get(signal.symbol):
         return False
     plans = arm_plan_records(signal, ("LONG", "SHORT"))
     fingerprint = auto_plan_fingerprint(plans)
     if not plans or fingerprint == get_auto_plan_fingerprint(signal.symbol):
         return False
+    armed = get_armed_trade_plans().get(signal.symbol, {})
+    if armed:
+        replacements = {
+            side: plan for side, plan in plans.items()
+            if plan.get("zone_state") == "BREAKOUT RETEST"
+            and (
+                side not in armed
+                or auto_plan_fingerprint({side: plan}) != auto_plan_fingerprint({side: armed[side]})
+            )
+        }
+        if not replacements:
+            return False
+        armed.update(replacements)
+        plans = armed
     set_armed_trade_plans(signal.symbol, plans)
     set_auto_plan_fingerprint(signal.symbol, fingerprint)
     return True

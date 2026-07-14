@@ -665,18 +665,43 @@ def create_structural_trade_plans(signal: MarketSignal) -> dict[str, dict[str, A
     price = signal.price
     supports = [(a.support, i, a) for i, a in analyses if 0 < a.support <= price]
     resistances = [(a.resistance, i, a) for i, a in analyses if a.resistance >= price]
+    continuation_distance = {"SCALPING": 1.0, "DAY": 2.5, "SWING": 5.0}.get(profile.horizon, 2.5)
+    broken_resistances = [
+        (a.resistance, i, a) for i, a in analyses
+        if 0 < a.resistance < price and (price - a.resistance) / max(price, 1e-9) * 100 <= continuation_distance
+    ]
+    broken_supports = [
+        (a.support, i, a) for i, a in analyses
+        if a.support > price and (a.support - price) / max(price, 1e-9) * 100 <= continuation_distance
+    ]
     if not supports:
         supports = [(price - max(float(a.atr), price * 0.005), i, a) for i, a in analyses]
     if not resistances:
         resistances = [(price + max(float(a.atr), price * 0.005), i, a) for i, a in analyses]
     selected = {
-        "LONG": max(supports, key=lambda item: item[0]),
-        "SHORT": min(resistances, key=lambda item: item[0]),
+        "LONG": (
+            max(broken_resistances, key=lambda item: item[0])
+            if signal.score >= 20.0 and broken_resistances
+            else max(supports, key=lambda item: item[0])
+        ),
+        "SHORT": (
+            min(broken_supports, key=lambda item: item[0])
+            if signal.score <= -20.0 and broken_supports
+            else min(resistances, key=lambda item: item[0])
+        ),
     }
     plans: dict[str, dict[str, Any]] = {}
     for side, (level, interval, analysis) in selected.items():
         atr = max(float(analysis.atr), price * 0.002)
-        zone_low, zone_high = ((level, level + atr * 0.25) if side == "LONG" else (level - atr * 0.25, level))
+        breakout_retest = (
+            (side == "LONG" and any(level == item[0] and interval == item[1] for item in broken_resistances))
+            or (side == "SHORT" and any(level == item[0] and interval == item[1] for item in broken_supports))
+        )
+        zone_low, zone_high = (
+            (level - atr * 0.10, level + atr * 0.20)
+            if breakout_retest
+            else ((level, level + atr * 0.25) if side == "LONG" else (level - atr * 0.25, level))
+        )
         stop = level - atr * 0.75 if side == "LONG" else level + atr * 0.75
         midpoint = (zone_low + zone_high) / 2.0
         risk = abs(midpoint - stop)
@@ -686,6 +711,7 @@ def create_structural_trade_plans(signal: MarketSignal) -> dict[str, dict[str, A
             "stop": stop, "tp1": midpoint + direction * risk * 1.25,
             "tp2": midpoint + direction * risk * 2.0,
             "tp3": midpoint + direction * risk * 3.0,
+            "zone_state": "BREAKOUT RETEST" if breakout_retest else "REVERSAL WATCH",
         }
     return plans
 
@@ -842,7 +868,10 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
             ]), f"Armed {side.lower()} plan reached confirmation")
         if inside and not bool(plan.get("zone_alerted", False)):
             plan["zone_alerted"] = True
-            if flow_ok and (momentum_ok or candle_ok):
+            if plan.get("zone_state") == "BREAKOUT RETEST" and flow_ok and (momentum_ok or candle_ok):
+                zone_state = "BREAKOUT RETEST"
+                zone_action = "The broken level is being retested with directional support. Require the full checklist before entering; do not chase away from the zone."
+            elif flow_ok and (momentum_ok or candle_ok):
                 zone_state = "REVERSAL TEST"
                 zone_action = "Reversal evidence is developing. Still require every checklist item and event clearance before an entry alert."
             elif breakout_pressure:
@@ -921,11 +950,26 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
         all_resistances = [(price + max(float(analysis.atr), price * 0.005), interval, analysis)]
     supports = [item for item in all_supports if item[0] <= price]
     resistances = [item for item in all_resistances if item[0] >= price]
+    continuation_distance = {"SCALPING": 1.0, "DAY": 2.5, "SWING": 5.0}.get(profile.horizon, 2.5)
+    broken_resistances = [
+        item for item in all_resistances
+        if item[0] < price and (price - item[0]) / max(price, 1e-9) * 100 <= continuation_distance
+    ]
+    broken_supports = [
+        item for item in all_supports
+        if item[0] > price and (item[0] - price) / max(price, 1e-9) * 100 <= continuation_distance
+    ]
     long_level, long_interval, long_analysis = (
+        max(broken_resistances, key=lambda item: item[0])
+        if signal.score >= 20.0 and broken_resistances
+        else
         max(supports, key=lambda item: item[0])
         if supports else min(all_supports, key=lambda item: abs(item[0] - price))
     )
     short_level, short_interval, short_analysis = (
+        min(broken_supports, key=lambda item: item[0])
+        if signal.score <= -20.0 and broken_supports
+        else
         min(resistances, key=lambda item: item[0])
         if resistances else min(all_resistances, key=lambda item: abs(item[0] - price))
     )
