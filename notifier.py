@@ -397,6 +397,7 @@ def evaluate_early_opportunity_alert(
         risk = midpoint - invalidation if side == "LONG" else invalidation - midpoint
         direction = 1.0 if side == "LONG" else -1.0
         set_early_opportunity(opportunity_key, {
+            "id": f"{opportunity_key}:{int(now)}",
             "symbol": signal.symbol, "interval": interval, "side": side,
             "zone_low": zone_low, "zone_high": zone_high,
             "invalidation": invalidation,
@@ -554,6 +555,25 @@ def build_radar_stats_message() -> str:
     active = list(get_early_opportunities().values())
     outcomes = get_early_opportunity_outcomes()
     counts = {status: sum(item.get("status") == status for item in outcomes) for status in ("ZONE_REACHED", "TARGET_1R", "TARGET_2R", "CONFIRMED", "INVALIDATED", "EXPIRED")}
+    lifecycles: dict[str, list[dict[str, Any]]] = {}
+    for item in outcomes:
+        lifecycle_id = str(item.get("id", f"legacy:{item.get('symbol')}:{item.get('interval')}:{item.get('side')}:{item.get('timestamp')}"))
+        lifecycles.setdefault(lifecycle_id, []).append(item)
+    unconfirmed_1r = sum(
+        any(item.get("status") == "TARGET_1R" for item in lifecycle)
+        and not any(item.get("status") == "CONFIRMED" for item in lifecycle)
+        for lifecycle in lifecycles.values()
+    )
+    unconfirmed_2r = sum(
+        any(item.get("status") == "TARGET_2R" for item in lifecycle)
+        and not any(item.get("status") == "CONFIRMED" for item in lifecycle)
+        for lifecycle in lifecycles.values()
+    )
+    correctly_avoided = sum(
+        any(item.get("status") == "INVALIDATED" for item in lifecycle)
+        and not any(item.get("status") == "CONFIRMED" for item in lifecycle)
+        for lifecycle in lifecycles.values()
+    )
     lines = [
         "📈 OPPORTUNITY RADAR TRACKING",
         "",
@@ -564,6 +584,12 @@ def build_radar_stats_message() -> str:
         f"Confirmed tactical entries: {counts['CONFIRMED']}",
         f"Invalidated: {counts['INVALIDATED']}",
         f"Expired without confirmation: {counts['EXPIRED']}",
+        "",
+        "MISSED-OPPORTUNITY AUDIT",
+        f"Unconfirmed watches that later reached hypothetical 1R: {unconfirmed_1r}",
+        f"Unconfirmed watches that later reached hypothetical 2R: {unconfirmed_2r}",
+        f"Unconfirmed watches correctly avoided before invalidation: {correctly_avoided}",
+        "Use these counts to tune thresholds; they do not assume an executable fill.",
         "",
         f"Recorded lifecycle events: {len(outcomes)} (latest 200 retained)",
     ]

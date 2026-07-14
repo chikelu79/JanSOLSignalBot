@@ -234,6 +234,7 @@ def validate_state(
                     "created_at": float(item["created_at"]),
                     "expires_at": float(item["expires_at"]),
                     "relationship": str(item.get("relationship", "MIXED-TREND")),
+                    "id": str(item.get("id", f"{normalize_symbol(str(item['symbol']))}:{interval}:{side}:{int(float(item['created_at']))}")),
                     "triggers": [str(value) for value in item.get("triggers", [])][:8],
                     "zone_reached": bool(item.get("zone_reached", False)),
                     "target_1r": float(item.get("target_1r", 0.0)),
@@ -256,6 +257,7 @@ def validate_state(
                 if status not in {"ZONE_REACHED", "TARGET_1R", "TARGET_2R", "CONFIRMED", "INVALIDATED", "EXPIRED"}:
                     continue
                 validated_outcomes.append({
+                    "id": str(item.get("id", f"legacy:{item['symbol']}:{item['interval']}:{item['side']}:{int(float(item['timestamp']))}")),
                     "symbol": normalize_symbol(str(item["symbol"])),
                     "interval": str(item["interval"]),
                     "side": str(item["side"]).upper(),
@@ -696,6 +698,7 @@ def get_early_opportunity_outcomes() -> list[dict[str, Any]]:
 def record_early_opportunity_outcome(opportunity: dict[str, Any], status: str, price: float, timestamp: float) -> None:
     outcomes = list(STATE.get("early_opportunity_outcomes", []))
     outcomes.append({
+        "id": str(opportunity.get("id", f"{opportunity['symbol']}:{opportunity['interval']}:{opportunity['side']}:{int(float(opportunity.get('created_at', timestamp)))}")),
         "symbol": normalize_symbol(str(opportunity["symbol"])),
         "interval": str(opportunity["interval"]),
         "side": str(opportunity["side"]).upper(),
