@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from bot_state import get_active_setups, remove_active_setup, set_active_setup
+from economic_calendar import format_event_time, get_economic_risk
 from session_context import get_session_context
 from strategy import MarketSignal, TradePlan, get_readiness_label, get_signal_grade
 
@@ -17,6 +18,7 @@ DO_NOT_CHASE_COOLDOWN_SECONDS = 20 * 60
 RAPID_CHANGE_COOLDOWN_SECONDS = 15 * 60
 DERIVATIVES_ALERT_COOLDOWN_SECONDS = 30 * 60
 DERIVATIVES_EXIT_COOLDOWN_SECONDS = 15 * 60
+ECONOMIC_ALERT_COOLDOWN_SECONDS = 6 * 60 * 60
 RAPID_SCORE_CHANGE = 22.0
 
 last_alert_times: dict[str, float] = {}
@@ -398,6 +400,7 @@ def build_scan_message(signal: MarketSignal, context: Any | None = None) -> str:
     adjusted = float(getattr(context, "adjusted_score", signal.score))
     status, status_detail = execution_status(signal)
     session = get_session_context()
+    economic = get_economic_risk()
     reasons = list(signal.supporting_reasons)
     warnings = list(signal.warnings)
     if context is not None:
@@ -421,6 +424,10 @@ def build_scan_message(signal: MarketSignal, context: Any | None = None) -> str:
         "SESSION CONTEXT",
         f"{session.label}: {session.detail}",
         f"Caution: {session.caution}",
+        "",
+        "ECONOMIC CALENDAR",
+        f"Risk: {economic.status}",
+        economic.detail,
         "",
         "TIMEFRAMES",
         *format_timeframes(signal),
@@ -452,6 +459,7 @@ def build_alert_message(
     plan = signal.trade_plan
     adjusted = float(getattr(context, "adjusted_score", signal.score))
     session = get_session_context()
+    economic = get_economic_risk()
     headings = {
         "WATCH": f"👀 {signal.symbol} LEVEL APPROACHING",
         "PREPARE": f"🟠 {signal.symbol} INSIDE ENTRY ZONE",
@@ -473,6 +481,7 @@ def build_alert_message(
         f"Adjusted score: {adjusted:+.1f}",
         f"Confidence: {min(95, int(abs(adjusted)))}%",
         f"Session: {session.label}",
+        f"Economic risk: {economic.status}",
         "",
         "CONFIDENCE BREAKDOWN",
         *build_confidence_breakdown(signal, context),
@@ -527,6 +536,39 @@ def build_derivatives_alert_message(
             "Decision support only. Confirm price structure before acting.",
         ]
     )
+
+
+def evaluate_economic_alert() -> AlertDecision:
+    risk = get_economic_risk()
+    event = risk.event
+    if event is None or risk.status == "CLEAR":
+        return AlertDecision(False, "NONE", "MARKET", "", "No nearby economic event")
+
+    key = make_alert_key("MARKET", "ECONOMIC_EVENT", f"{event.name}:{risk.status}")
+    if not alert_allowed(key, ECONOMIC_ALERT_COOLDOWN_SECONDS):
+        return AlertDecision(False, "NONE", "MARKET", "", "Economic alert cooldown active")
+
+    mark_alert_sent(key)
+    heading = "🚨 HIGH-IMPACT EVENT RISK" if risk.block_new_entries else "📅 HIGH-IMPACT EVENT AHEAD"
+    action = (
+        "New entries are temporarily blocked. Wait for the release candle to settle and a level to retest."
+        if risk.block_new_entries
+        else "Avoid chasing and be cautious with fresh exposure as the release approaches."
+    )
+    message = "\n".join(
+        [
+            heading,
+            "",
+            f"Event: {event.name}",
+            f"Time: {format_event_time(event)}",
+            f"Risk status: {risk.status}",
+            f"Source: {event.source}",
+            "",
+            risk.detail,
+            f"Action: {action}",
+        ]
+    )
+    return AlertDecision(True, "ECONOMIC_EVENT", "MARKET", message, risk.detail)
 
 
 def evaluate_derivatives_alert(
@@ -651,6 +693,7 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
     previous_hash = last_signal_hashes.get(symbol)
     last_signal_hashes[symbol] = current_hash
     state = setup_states.get(symbol)
+    economic = get_economic_risk()
 
     if state:
         plan = state["plan"]
@@ -706,6 +749,18 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
         return _decision(signal, context, "DO_NOT_CHASE", "Price left the entry zone", note, DO_NOT_CHASE_COOLDOWN_SECONDS)
     if signal.trade_plan is None or signal.direction == "WAIT":
         return AlertDecision(False, "NONE", symbol, "", "No actionable setup")
+    if economic.block_new_entries:
+        key = make_alert_key(symbol, "EVENT_RISK", economic.event.name if economic.event else "MACRO")
+        if alert_allowed(key, ECONOMIC_ALERT_COOLDOWN_SECONDS):
+            mark_alert_sent(key)
+            return AlertDecision(
+                True,
+                "EVENT_RISK",
+                symbol,
+                build_alert_message(signal, "PREPARE", context, economic.detail),
+                "High-impact economic event blocks new entries",
+            )
+        return AlertDecision(False, "NONE", symbol, "", "Economic event risk blocks entry")
     if previous_hash == current_hash:
         return AlertDecision(False, "NONE", symbol, "", "Duplicate signal")
     if status == "WATCH":

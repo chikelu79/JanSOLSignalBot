@@ -1,15 +1,19 @@
 """Offline structural smoke test. It does not contact Binance or Telegram."""
 
 from dataclasses import asdict
+from datetime import datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from bot_state import get_active_setups, remove_active_setup, set_active_setup
+from economic_calendar import build_calendar_message, get_economic_risk
 from market_context import build_market_context
 from notifier import (
     build_active_setups_message,
     build_confidence_breakdown,
     build_scan_message,
     evaluate_derivatives_alert,
+    evaluate_economic_alert,
     evaluate_signal_alert,
     setup_states,
 )
@@ -17,6 +21,16 @@ from strategy import MarketSignal, TradePlan, create_trade_plan
 
 
 def main() -> None:
+    eastern = ZoneInfo("America/New_York")
+    upcoming = get_economic_risk(datetime(2026, 7, 13, 20, 0, tzinfo=eastern))
+    blocked = get_economic_risk(datetime(2026, 7, 14, 8, 0, tzinfo=eastern))
+    post_release = get_economic_risk(datetime(2026, 7, 14, 9, 15, tzinfo=eastern))
+    assert upcoming.status == "UPCOMING" and not upcoming.block_new_entries
+    assert blocked.status == "HIGH RISK" and blocked.block_new_entries
+    assert post_release.status == "POST-RELEASE" and post_release.block_new_entries
+    assert "US Employment / NFP" in build_calendar_message(datetime(2026, 7, 30, 12, 0, tzinfo=eastern))
+    economic_alert = evaluate_economic_alert()
+    assert economic_alert.alert_type in {"ECONOMIC_EVENT", "NONE"}
     structural_analysis = SimpleNamespace(
         atr=2.0,
         support=95.0,

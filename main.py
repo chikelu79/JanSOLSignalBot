@@ -13,6 +13,7 @@ from telegram.ext import (
 )
 
 import market
+from economic_calendar import build_calendar_message
 from bot_state import (
     add_to_watchlist,
     get_runtime_chat_id,
@@ -31,6 +32,7 @@ from notifier import (
     build_scan_message,
     evaluate_signal_alert,
     evaluate_derivatives_alert,
+    evaluate_economic_alert,
     price_text,
 )
 from strategy import (
@@ -481,6 +483,7 @@ async def start_command(
         "/removewatch XRP - Remove a pair\n"
         "/watchlist - Show monitored pairs\n"
         "/market - BTC, dominance and VIX context\n"
+        "/calendar - CPI, NFP and FOMC risk windows\n"
         "/monitor on - Enable automatic alerts\n"
         "/monitor off - Disable automatic alerts\n"
         "/setups - Show active managed setups\n"
@@ -665,6 +668,13 @@ async def analysis_command(
         update,
         context,
     )
+
+
+async def calendar_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    await send_long_message(update, build_calendar_message())
 
 
 async def timeframes_command(
@@ -1324,6 +1334,16 @@ async def monitor_loop(
     while True:
         try:
             if is_monitor_enabled():
+                economic_decision = evaluate_economic_alert()
+                if economic_decision.should_send:
+                    destination = get_destination_chat_id()
+                    if destination:
+                        await application.bot.send_message(
+                            chat_id=destination,
+                            text=economic_decision.message[:TELEGRAM_MESSAGE_LIMIT],
+                        )
+                        logger.info("Sent economic event alert: %s", economic_decision.reason)
+
                 watchlist = get_watchlist()[
                     :MAX_MONITORED_PAIRS
                 ]
@@ -1436,6 +1456,10 @@ async def post_init(
         BotCommand(
             "market",
             "Show macro market context",
+        ),
+        BotCommand(
+            "calendar",
+            "Show CPI, NFP and FOMC events",
         ),
         BotCommand(
             "monitor",
@@ -1629,6 +1653,13 @@ def main() -> None:
         CommandHandler(
             "market",
             market_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "calendar",
+            calendar_command,
         )
     )
 
