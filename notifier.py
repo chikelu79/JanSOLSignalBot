@@ -74,6 +74,35 @@ class AlertDecision:
     reason: str
 
 
+ALERT_PRIORITY = {
+    "DERIVATIVES_EXIT": 100,
+    "ARMED_PLAN_CLOSED": 95,
+    "ARMED_PLAN_READY": 90,
+    "TACTICAL_ENTRY": 88,
+    "ENTRY": 85,
+    "EVENT_PLANS_REFRESHED": 82,
+    "ARMED_PLAN_ZONE": 75,
+    "ARMED_PLAN_APPROACHING": 65,
+    "EARLY_OPPORTUNITY": 55,
+    "LIQUIDATION_WAVE": 45,
+    "ORDER_FLOW_SHIFT": 35,
+    "LARGE_TRADE_FLOW": 30,
+    "FUNDING_CROWDING": 25,
+    "OI_SURGE": 20,
+    "OI_DIVERGENCE": 20,
+}
+
+
+def select_monitor_alerts(*decisions: AlertDecision, maximum: int = 1) -> tuple[AlertDecision, ...]:
+    """Keep the most actionable alert so supporting flow does not flood Telegram."""
+    sendable = [decision for decision in decisions if decision.should_send]
+    ranked = sorted(
+        enumerate(sendable),
+        key=lambda item: (-ALERT_PRIORITY.get(item[1].alert_type, 50), item[0]),
+    )
+    return tuple(decision for _, decision in ranked[:max(0, maximum)])
+
+
 def valid_number(value: Any) -> bool:
     try:
         number = float(value)

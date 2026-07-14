@@ -66,6 +66,7 @@ from notifier import (
     evaluate_session_alert,
     evaluate_news_alert,
     price_text,
+    select_monitor_alerts,
 )
 from strategy import (
     MarketSignal,
@@ -1928,14 +1929,12 @@ async def monitor_one_symbol(
                 ]) if event_plans_refreshed else "",
                 "Post-event market structure replaced stale pre-release plans" if event_plans_refreshed else "No event-plan refresh required",
             )
-            alert_decisions = (
-                (refresh_decision, derivatives_decision)
-                if refresh_decision.should_send
-                else (armed_decision, derivatives_decision)
-                if armed_decision.should_send
-                else (decision, derivatives_decision)
-                if decision.should_send
-                else (early_decision, derivatives_decision)
+            alert_decisions = select_monitor_alerts(
+                refresh_decision,
+                armed_decision,
+                decision,
+                early_decision,
+                derivatives_decision,
             )
             for alert_decision in alert_decisions:
                 if not alert_decision.should_send:

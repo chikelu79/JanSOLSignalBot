@@ -34,6 +34,7 @@ from notifier import (
     evaluate_session_alert,
     evaluate_signal_alert,
     reversal_candle_confirmed,
+    select_monitor_alerts,
     setup_states,
 )
 from trading_profile import get_profile, mfi_reversal_min_change
@@ -292,6 +293,11 @@ def main() -> None:
     assert "QUICK TRADE VIEW" in trade_brief
     assert "KEY LEVEL MAP" not in trade_brief
     assert "/trade" in trade_brief and "/scan" in trade_brief and "/health" in trade_brief
+    tactical = notifier_module.AlertDecision(True, "ARMED_PLAN_READY", "SOLUSDT", "entry", "ready")
+    whale = notifier_module.AlertDecision(True, "LARGE_TRADE_FLOW", "SOLUSDT", "flow", "large flow")
+    assert select_monitor_alerts(whale, tactical) == (tactical,)
+    risk_exit = notifier_module.AlertDecision(True, "DERIVATIVES_EXIT", "SOLUSDT", "exit", "risk")
+    assert select_monitor_alerts(tactical, risk_exit) == (risk_exit,)
     signal.analyses["15m"].divergences = ["Bearish regular divergence"]
     conflicting_dashboard = build_trade_dashboard(
         signal,
