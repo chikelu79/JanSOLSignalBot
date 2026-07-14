@@ -26,6 +26,7 @@ RAPID_SCORE_CHANGE = 22.0
 last_alert_times: dict[str, float] = {}
 last_signal_hashes: dict[str, str] = {}
 previous_scores: dict[str, float] = {}
+seen_news_ids: set[str] = set()
 
 
 def _load_setup_states() -> dict[str, dict[str, Any]]:
@@ -259,6 +260,10 @@ def format_market_context(context: Any | None) -> list[str]:
         f"{direction_emoji('LONG' if getattr(context, 'macro_bias', 'NEUTRAL') == 'BULLISH' else 'SHORT' if getattr(context, 'macro_bias', 'NEUTRAL') == 'BEARISH' else 'WAIT')} Macro bias: {getattr(context, 'macro_bias', 'NEUTRAL')} "
         f"({getattr(context, 'macro_score', 0):+.1f}; bullish ≥ +8, bearish ≤ -8)",
         f"🟡 Context adjustment: {getattr(context, 'score_adjustment', 0):+.1f} (meaningful at ±5; capped at ±30)",
+        "",
+        f"{'🟢' if getattr(context, 'news_label', 'NEUTRAL') == 'BULLISH' else '🔴' if getattr(context, 'news_label', 'NEUTRAL') == 'BEARISH' else '🟡'} "
+        f"Official news 24h: {getattr(context, 'news_label', 'NEUTRAL')} "
+        f"({getattr(context, 'news_score', 0):+.0f}/6; score impact capped at ±3)",
     ]
 
 
@@ -681,6 +686,32 @@ def evaluate_session_alert() -> AlertDecision:
         ]
     )
     return AlertDecision(True, "SESSION_TIMING", "MARKET", message, identity)
+
+
+def evaluate_news_alert(data: dict[str, Any]) -> AlertDecision:
+    now = time.time()
+    candidates = sorted(data.get("recent_items", []), key=lambda item: item["published_at"], reverse=True)
+    for item in candidates:
+        item_id = str(item.get("id", ""))
+        age = now - item["published_at"].timestamp()
+        if not item_id or item_id in seen_news_ids or age > 30 * 60:
+            continue
+        seen_news_ids.add(item_id)
+        if item.get("label") == "NEUTRAL":
+            continue
+        icon = "🟢" if item["label"] == "BULLISH" else "🔴"
+        message = "\n".join([
+            f"{icon} OFFICIAL NEWS ALERT",
+            "",
+            f"Source: {item['source']}",
+            f"Classification: {item['label']} ({int(item['score']):+d}; maximum item weight ±3)",
+            f"Headline: {item['title']}",
+            f"Link: {item['link']}",
+            "",
+            "Action: Reassess market structure and liquidity. A headline never creates an entry by itself.",
+        ])
+        return AlertDecision(True, "NEWS", "MARKET", message, "New relevant official headline")
+    return AlertDecision(False, "NONE", "MARKET", "", "No new relevant official headline")
 
 
 def evaluate_derivatives_alert(

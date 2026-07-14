@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from bot_state import get_active_setups, remove_active_setup, set_active_setup
 from economic_calendar import build_calendar_message, get_economic_risk
+from news_intelligence import build_news_message
 from lunar_context import get_lunar_context
 from market_context import build_market_context
 from notifier import (
@@ -41,6 +42,8 @@ def main() -> None:
     assert get_session_context(datetime(2026, 7, 14, 20, 0, tzinfo=eastern)).label == "ASIA OPEN"
     assert "QUARTER-END" in get_special_market_event(datetime(2026, 9, 30, 15, 0, tzinfo=eastern))
     assert evaluate_session_alert().alert_type in {"SESSION_TIMING", "NONE"}
+    news_message = build_news_message({"label": "BEARISH", "score": -2, "relevant_items": [], "errors": []})
+    assert "24h bias: BEARISH (-2; capped at ±6)" in news_message
     structural_analysis = SimpleNamespace(
         atr=2.0,
         support=95.0,

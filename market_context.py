@@ -16,6 +16,7 @@ import pandas as pd
 import market
 from indicators import clamp
 from strategy import MarketSignal, build_market_signal
+from news_intelligence import fetch_news_intelligence
 
 
 logger = logging.getLogger(__name__)
@@ -120,6 +121,9 @@ class MarketContext:
     largest_trade_value: float
     largest_trade_side: str
     largest_trade_multiple: float
+    news_score: float
+    news_label: str
+    news_live: bool
 
     reasons: list[str]
     warnings: list[str]
@@ -944,6 +948,7 @@ async def get_market_context_data(
     derivatives_task = asyncio.create_task(
         fetch_derivatives_context(selected_symbol)
     )
+    news_task = asyncio.create_task(fetch_news_intelligence())
 
     results = await asyncio.gather(
         btc_task,
@@ -952,6 +957,7 @@ async def get_market_context_data(
         vix_task,
         fear_greed_task,
         derivatives_task,
+        news_task,
         return_exceptions=True,
     )
 
@@ -962,6 +968,7 @@ async def get_market_context_data(
         "vix",
         "fear_greed",
         "derivatives",
+        "news",
     ]
 
     context: dict[str, Any] = {
@@ -1711,6 +1718,9 @@ def build_market_context(
     largest_trade_value = 0.0
     largest_trade_side = "UNKNOWN"
     largest_trade_multiple = 0.0
+    news_score = 0.0
+    news_label = "NEUTRAL"
+    news_live = False
 
     total_adjustment = 0.0
 
@@ -1965,6 +1975,16 @@ def build_market_context(
         {},
     )
 
+    news = context_data.get("news", {})
+    if news:
+        news_score = float(news.get("score", 0.0))
+        news_label = str(news.get("label", "NEUTRAL"))
+        news_live = bool(news.get("live", False))
+        if news_score:
+            news_adjustment = clamp(news_score * 0.5, -3.0, 3.0)
+            total_adjustment += news_adjustment
+            reasons.append(f"Official-news bias is {news_label.lower()} ({news_score:+.0f}/6).")
+
     if provider_errors:
         for provider_name, provider_error in provider_errors.items():
             warnings.append(
@@ -2061,6 +2081,9 @@ def build_market_context(
         largest_trade_value=largest_trade_value,
         largest_trade_side=largest_trade_side,
         largest_trade_multiple=largest_trade_multiple,
+        news_score=news_score,
+        news_label=news_label,
+        news_live=news_live,
         reasons=unique_reasons[:10],
         warnings=unique_warnings[:10],
     )

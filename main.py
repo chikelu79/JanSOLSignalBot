@@ -14,6 +14,7 @@ from telegram.ext import (
 
 import market
 from economic_calendar import build_calendar_message
+from news_intelligence import build_news_message, fetch_news_intelligence
 from bot_state import (
     add_to_watchlist,
     get_runtime_chat_id,
@@ -34,6 +35,7 @@ from notifier import (
     evaluate_derivatives_alert,
     evaluate_economic_alert,
     evaluate_session_alert,
+    evaluate_news_alert,
     price_text,
 )
 from strategy import (
@@ -485,6 +487,7 @@ async def start_command(
         "/watchlist - Show monitored pairs\n"
         "/market - BTC, dominance and VIX context\n"
         "/calendar - CPI, NFP and FOMC risk windows\n"
+        "/news - Official Fed and SEC news intelligence\n"
         "/monitor on - Enable automatic alerts\n"
         "/monitor off - Disable automatic alerts\n"
         "/setups - Show active managed setups\n"
@@ -676,6 +679,19 @@ async def calendar_command(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     await send_long_message(update, build_calendar_message())
+
+
+async def news_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    waiting = await update.effective_message.reply_text("📰 Checking official Fed and SEC feeds...")
+    try:
+        data = await fetch_news_intelligence(force=True)
+        await edit_or_reply(update, waiting, build_news_message(data))
+    except Exception as error:
+        logger.exception("News command failed.")
+        await waiting.edit_text(f"⚠️ News intelligence failed: {type(error).__name__}: {error}")
 
 
 async def timeframes_command(
@@ -1355,6 +1371,20 @@ async def monitor_loop(
                         )
                         logger.info("Sent market timing alert: %s", session_decision.reason)
 
+                try:
+                    news_data = await fetch_news_intelligence()
+                    news_decision = evaluate_news_alert(news_data)
+                    if news_decision.should_send:
+                        destination = get_destination_chat_id()
+                        if destination:
+                            await application.bot.send_message(
+                                chat_id=destination,
+                                text=news_decision.message[:TELEGRAM_MESSAGE_LIMIT],
+                            )
+                            logger.info("Sent official news alert: %s", news_decision.reason)
+                except Exception:
+                    logger.exception("Official news monitoring failed.")
+
                 watchlist = get_watchlist()[
                     :MAX_MONITORED_PAIRS
                 ]
@@ -1471,6 +1501,10 @@ async def post_init(
         BotCommand(
             "calendar",
             "Show CPI, NFP and FOMC events",
+        ),
+        BotCommand(
+            "news",
+            "Show official news intelligence",
         ),
         BotCommand(
             "monitor",
@@ -1671,6 +1705,13 @@ def main() -> None:
         CommandHandler(
             "calendar",
             calendar_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "news",
+            news_command,
         )
     )
 
