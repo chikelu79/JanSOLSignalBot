@@ -1523,6 +1523,9 @@ def add_all_indicators(
         close,
         14,
     )
+    result["rsi_6"] = calculate_rsi(close, 6)
+    result["rsi_12"] = calculate_rsi(close, 12)
+    result["rsi_24"] = calculate_rsi(close, 24)
 
     (
         result["macd"],

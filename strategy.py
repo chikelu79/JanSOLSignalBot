@@ -59,6 +59,12 @@ class TimeframeSignal:
 
     rsi: float
     previous_rsi: float
+    rsi_6: float
+    rsi_12: float
+    rsi_24: float
+    previous_rsi_6: float
+    previous_rsi_12: float
+    previous_rsi_24: float
 
     macd: float
     macd_signal: float
@@ -69,12 +75,16 @@ class TimeframeSignal:
 
     stoch_rsi_k: float
     stoch_rsi_d: float
+    previous_stoch_rsi_k: float
+    previous_stoch_rsi_d: float
 
     stochastic_k: float
     stochastic_d: float
 
     williams_r: float
     mfi: float
+    previous_mfi: float
+    two_back_mfi: float
 
     atr: float
     atr_percent: float
@@ -387,6 +397,9 @@ def analyze_timeframe(
         "macd": 0.0,
         "macd_signal": 0.0,
         "macd_histogram": 0.0,
+        "rsi_6": 50.0,
+        "rsi_12": 50.0,
+        "rsi_24": 50.0,
         "stoch_rsi_k": 50.0,
         "stoch_rsi_d": 50.0,
         "stochastic_k": 50.0,
@@ -467,6 +480,12 @@ def analyze_timeframe(
         50.0,
     )
     previous_rsi = safe_float(previous["rsi"], 50.0)
+    rsi_6 = safe_float(latest["rsi_6"], 50.0)
+    rsi_12 = safe_float(latest["rsi_12"], 50.0)
+    rsi_24 = safe_float(latest["rsi_24"], 50.0)
+    previous_rsi_6 = safe_float(previous["rsi_6"], 50.0)
+    previous_rsi_12 = safe_float(previous["rsi_12"], 50.0)
+    previous_rsi_24 = safe_float(previous["rsi_24"], 50.0)
 
     macd = safe_float(
         latest["macd"]
@@ -526,6 +545,8 @@ def analyze_timeframe(
         latest["mfi"],
         50.0,
     )
+    previous_mfi = safe_float(previous["mfi"], 50.0)
+    two_back_mfi = safe_float(clean_frame.iloc[-3]["mfi"], 50.0)
 
     atr = safe_float(
         latest["atr"]
@@ -732,6 +753,19 @@ def analyze_timeframe(
         score -= 8
         reasons.append(f"RSI exited overbought territory ({previous_rsi:.1f} → {rsi:.1f})")
 
+    if previous_rsi_6 <= previous_rsi_12 and rsi_6 > rsi_12:
+        score += 5
+        reasons.append(f"RSI 6 crossed above RSI 12 ({rsi_6:.1f} > {rsi_12:.1f})")
+    elif previous_rsi_6 >= previous_rsi_12 and rsi_6 < rsi_12:
+        score -= 5
+        reasons.append(f"RSI 6 crossed below RSI 12 ({rsi_6:.1f} < {rsi_12:.1f})")
+    if previous_rsi_12 <= previous_rsi_24 and rsi_12 > rsi_24:
+        score += 6
+        reasons.append(f"RSI 12 crossed above RSI 24 ({rsi_12:.1f} > {rsi_24:.1f})")
+    elif previous_rsi_12 >= previous_rsi_24 and rsi_12 < rsi_24:
+        score -= 6
+        reasons.append(f"RSI 12 crossed below RSI 24 ({rsi_12:.1f} < {rsi_24:.1f})")
+
     # =====================================================
     # MACD
     # =====================================================
@@ -797,15 +831,17 @@ def analyze_timeframe(
     )
 
     if bullish_stoch_rsi_cross:
-        score += 7
+        extreme_cross = min(previous_stoch_rsi_k, previous_stoch_rsi_d) <= 20
+        score += 10 if extreme_cross else 7
         reasons.append(
-            "Bullish Stochastic RSI crossover"
+            "Bullish Stochastic RSI crossover from oversold" if extreme_cross else "Bullish Stochastic RSI crossover"
         )
 
     elif bearish_stoch_rsi_cross:
-        score -= 7
+        extreme_cross = max(previous_stoch_rsi_k, previous_stoch_rsi_d) >= 80
+        score -= 10 if extreme_cross else 7
         reasons.append(
-            "Bearish Stochastic RSI crossover"
+            "Bearish Stochastic RSI crossover from overbought" if extreme_cross else "Bearish Stochastic RSI crossover"
         )
 
     elif stoch_rsi_k > stoch_rsi_d:
@@ -873,6 +909,13 @@ def analyze_timeframe(
         reasons.append(
             "MFI is overbought"
         )
+
+    if mfi > previous_mfi and previous_mfi <= two_back_mfi:
+        score += 5
+        reasons.append(f"MFI money flow turned upward ({previous_mfi:.1f} → {mfi:.1f})")
+    elif mfi < previous_mfi and previous_mfi >= two_back_mfi:
+        score -= 5
+        reasons.append(f"MFI money flow turned downward ({previous_mfi:.1f} → {mfi:.1f})")
 
     # =====================================================
     # ADX AND DIRECTIONAL MOVEMENT
@@ -1062,6 +1105,12 @@ def analyze_timeframe(
         sma200=sma200,
         rsi=rsi,
         previous_rsi=previous_rsi,
+        rsi_6=rsi_6,
+        rsi_12=rsi_12,
+        rsi_24=rsi_24,
+        previous_rsi_6=previous_rsi_6,
+        previous_rsi_12=previous_rsi_12,
+        previous_rsi_24=previous_rsi_24,
         macd=macd,
         macd_signal=macd_signal,
         macd_histogram=macd_histogram,
@@ -1070,10 +1119,14 @@ def analyze_timeframe(
         previous_macd_histogram=previous_macd_histogram,
         stoch_rsi_k=stoch_rsi_k,
         stoch_rsi_d=stoch_rsi_d,
+        previous_stoch_rsi_k=previous_stoch_rsi_k,
+        previous_stoch_rsi_d=previous_stoch_rsi_d,
         stochastic_k=stochastic_k,
         stochastic_d=stochastic_d,
         williams_r=williams_r,
         mfi=mfi,
+        previous_mfi=previous_mfi,
+        two_back_mfi=two_back_mfi,
         atr=atr,
         atr_percent=atr_percent,
         adx=adx,

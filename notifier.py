@@ -207,6 +207,37 @@ def build_early_opportunity_radar(signal: MarketSignal) -> list[str]:
             bullish.append("RSI exited oversold")
         elif analysis.previous_rsi > 70 >= analysis.rsi:
             bearish.append("RSI exited overbought")
+        rsi_6 = float(getattr(analysis, "rsi_6", 50.0))
+        rsi_12 = float(getattr(analysis, "rsi_12", 50.0))
+        rsi_24 = float(getattr(analysis, "rsi_24", 50.0))
+        previous_rsi_6 = float(getattr(analysis, "previous_rsi_6", rsi_6))
+        previous_rsi_12 = float(getattr(analysis, "previous_rsi_12", rsi_12))
+        previous_rsi_24 = float(getattr(analysis, "previous_rsi_24", rsi_24))
+        if previous_rsi_6 <= previous_rsi_12 and rsi_6 > rsi_12:
+            bullish.append(f"RSI 6 crossed above RSI 12 ({rsi_6:.1f}/{rsi_12:.1f})")
+        elif previous_rsi_6 >= previous_rsi_12 and rsi_6 < rsi_12:
+            bearish.append(f"RSI 6 crossed below RSI 12 ({rsi_6:.1f}/{rsi_12:.1f})")
+        if previous_rsi_12 <= previous_rsi_24 and rsi_12 > rsi_24:
+            bullish.append(f"RSI 12 crossed above RSI 24 ({rsi_12:.1f}/{rsi_24:.1f})")
+        elif previous_rsi_12 >= previous_rsi_24 and rsi_12 < rsi_24:
+            bearish.append(f"RSI 12 crossed below RSI 24 ({rsi_12:.1f}/{rsi_24:.1f})")
+        stoch_k = float(getattr(analysis, "stoch_rsi_k", 50.0))
+        stoch_d = float(getattr(analysis, "stoch_rsi_d", 50.0))
+        previous_stoch_k = float(getattr(analysis, "previous_stoch_rsi_k", stoch_k))
+        previous_stoch_d = float(getattr(analysis, "previous_stoch_rsi_d", stoch_d))
+        if previous_stoch_k <= previous_stoch_d and stoch_k > stoch_d:
+            strength = " from oversold" if min(previous_stoch_k, previous_stoch_d) <= 20 else ""
+            bullish.append(f"Stochastic RSI crossed bullish{strength}")
+        elif previous_stoch_k >= previous_stoch_d and stoch_k < stoch_d:
+            strength = " from overbought" if max(previous_stoch_k, previous_stoch_d) >= 80 else ""
+            bearish.append(f"Stochastic RSI crossed bearish{strength}")
+        mfi = float(getattr(analysis, "mfi", 50.0))
+        previous_mfi = float(getattr(analysis, "previous_mfi", mfi))
+        two_back_mfi = float(getattr(analysis, "two_back_mfi", previous_mfi))
+        if mfi > previous_mfi and previous_mfi <= two_back_mfi:
+            bullish.append(f"MFI money flow turned upward ({previous_mfi:.1f}→{mfi:.1f})")
+        elif mfi < previous_mfi and previous_mfi >= two_back_mfi:
+            bearish.append(f"MFI money flow turned downward ({previous_mfi:.1f}→{mfi:.1f})")
         if not bullish and not bearish:
             if analysis.rsi < 28:
                 opportunities.extend([f"🟡 {interval} OVERSOLD EXHAUSTION WATCH — RSI {analysis.rsi:.1f}; wait for a bullish turn."])
