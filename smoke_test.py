@@ -1,7 +1,7 @@
 """Offline structural smoke test. It does not contact Binance or Telegram."""
 
 from market_context import build_market_context
-from notifier import build_scan_message, evaluate_signal_alert
+from notifier import build_confidence_breakdown, build_scan_message, evaluate_signal_alert
 from strategy import MarketSignal, TradePlan
 
 
@@ -61,6 +61,9 @@ def main() -> None:
     assert "Risk:" in message
     assert decision.should_send
     assert decision.alert_type == "WATCH"
+    signal.trade_plan = None
+    breakdown = build_confidence_breakdown(signal, context)
+    assert "Risk: N/A — no active setup" in breakdown
     print("Smoke test passed")
 
 

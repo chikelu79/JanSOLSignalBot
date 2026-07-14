@@ -243,16 +243,41 @@ def build_confidence_breakdown(
     macro = float(getattr(context, "macro_score", 0.0))
     macro = max(-100.0, min(100.0, macro / 30.0 * 100.0))
 
-    available = max(1, len(signal.analyses))
-    dominant = max(
-        signal.bullish_timeframes,
-        signal.bearish_timeframes,
-        signal.neutral_timeframes,
+    signed_scores = [
+        (analysis.score, timeframe_weights.get(interval, 0.10))
+        for interval, analysis in signal.analyses.items()
+    ]
+    weighted_net = sum(score * weight for score, weight in signed_scores)
+    weighted_strength = sum(abs(score) * weight for score, weight in signed_scores)
+    alignment = (
+        abs(weighted_net) / weighted_strength * 100.0
+        if weighted_strength > 0
+        else 0.0
     )
-    alignment = min(100.0, dominant / available * 100.0)
-    risk_quality = 100.0 - min(50.0, len(signal.warnings) * 8.0)
-    risk_quality = max(0.0, min(100.0, (risk_quality + alignment) / 2.0))
-    risk_label = "LOW" if risk_quality >= 75 else "MEDIUM" if risk_quality >= 50 else "HIGH"
+
+    risk_line = "Risk: N/A — no active setup"
+    if signal.trade_plan is not None:
+        plan = signal.trade_plan
+        reward_quality = max(
+            0.0,
+            min(100.0, plan.reward_risk_tp2 / 3.0 * 100.0),
+        )
+        warning_quality = max(0.0, 100.0 - len(signal.warnings) * 12.0)
+        volume_quality = volume
+        risk_quality = (
+            alignment * 0.35
+            + reward_quality * 0.30
+            + warning_quality * 0.20
+            + volume_quality * 0.15
+        )
+        risk_label = (
+            "LOW"
+            if risk_quality >= 75
+            else "MEDIUM"
+            if risk_quality >= 50
+            else "HIGH"
+        )
+        risk_line = f"Risk: {risk_label} ({risk_quality:.0f}/100 setup quality)"
 
     return [
         f"Trend: {abs(trend):.0f}% {_bias_label(trend)}",
@@ -261,7 +286,7 @@ def build_confidence_breakdown(
         f"Liquidity position: {abs(liquidity):.0f}% {_bias_label(liquidity)}",
         f"Volume activity: {volume:.0f}%",
         f"Timeframe alignment: {alignment:.0f}%",
-        f"Risk: {risk_label} ({risk_quality:.0f}/100 quality)",
+        risk_line,
     ]
 
 
