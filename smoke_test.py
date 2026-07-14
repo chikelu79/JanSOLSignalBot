@@ -152,6 +152,20 @@ def main() -> None:
     stored_key = "TESTUSDT:5m:LONG"
     assert stored_key in get_early_opportunities()
     remove_early_opportunity(stored_key)
+    tiny_cross = signal.analyses["5m"]
+    tiny_cross.previous_macd = tiny_cross.macd = 0.1
+    tiny_cross.previous_macd_signal = tiny_cross.macd_signal = 0.0
+    tiny_cross.previous_macd_histogram = tiny_cross.macd_histogram = 0.1
+    tiny_cross.previous_rsi = tiny_cross.rsi = 50.0
+    tiny_cross.previous_rsi_6, tiny_cross.previous_rsi_12 = 50.0, 50.1
+    tiny_cross.rsi_6, tiny_cross.rsi_12 = 50.2, 50.0
+    tiny_cross.previous_rsi_24 = 50.1
+    tiny_cross.rsi_24 = 49.9
+    tiny_cross.previous_stoch_rsi_k = tiny_cross.stoch_rsi_k = 50.0
+    tiny_cross.previous_stoch_rsi_d = tiny_cross.stoch_rsi_d = 50.0
+    tiny_cross.two_back_mfi = tiny_cross.previous_mfi = tiny_cross.mfi = 50.0
+    tiny_radar = build_early_opportunity_radar(signal)
+    assert not any("RSI 6 crossed" in line or "RSI 12 crossed" in line for line in tiny_radar)
     signal.price = 100.5
     signal.analyses = {}
     signal.analyses = {
@@ -295,6 +309,7 @@ def main() -> None:
         },
     )
     assert large_trade_alert.alert_type == "LARGE_TRADE_FLOW"
+    assert "Largest trade: $200,000.00 BUY — 40.0× average\nLarge-trade net flow:" in large_trade_alert.message
     assert "Execution status: WATCH" in message
     assert "CONFIDENCE BREAKDOWN" in message
     assert "Risk:" in message

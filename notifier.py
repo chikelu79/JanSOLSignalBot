@@ -218,30 +218,30 @@ def build_early_opportunity_radar(signal: MarketSignal, context: Any | None = No
         previous_rsi_6 = float(getattr(analysis, "previous_rsi_6", rsi_6))
         previous_rsi_12 = float(getattr(analysis, "previous_rsi_12", rsi_12))
         previous_rsi_24 = float(getattr(analysis, "previous_rsi_24", rsi_24))
-        if previous_rsi_6 <= previous_rsi_12 and rsi_6 > rsi_12:
+        if previous_rsi_6 <= previous_rsi_12 and rsi_6 - rsi_12 >= 0.5:
             bullish.append(f"RSI 6 crossed above RSI 12 ({rsi_6:.1f}/{rsi_12:.1f})")
-        elif previous_rsi_6 >= previous_rsi_12 and rsi_6 < rsi_12:
+        elif previous_rsi_6 >= previous_rsi_12 and rsi_12 - rsi_6 >= 0.5:
             bearish.append(f"RSI 6 crossed below RSI 12 ({rsi_6:.1f}/{rsi_12:.1f})")
-        if previous_rsi_12 <= previous_rsi_24 and rsi_12 > rsi_24:
+        if previous_rsi_12 <= previous_rsi_24 and rsi_12 - rsi_24 >= 0.5:
             bullish.append(f"RSI 12 crossed above RSI 24 ({rsi_12:.1f}/{rsi_24:.1f})")
-        elif previous_rsi_12 >= previous_rsi_24 and rsi_12 < rsi_24:
+        elif previous_rsi_12 >= previous_rsi_24 and rsi_24 - rsi_12 >= 0.5:
             bearish.append(f"RSI 12 crossed below RSI 24 ({rsi_12:.1f}/{rsi_24:.1f})")
         stoch_k = float(getattr(analysis, "stoch_rsi_k", 50.0))
         stoch_d = float(getattr(analysis, "stoch_rsi_d", 50.0))
         previous_stoch_k = float(getattr(analysis, "previous_stoch_rsi_k", stoch_k))
         previous_stoch_d = float(getattr(analysis, "previous_stoch_rsi_d", stoch_d))
-        if previous_stoch_k <= previous_stoch_d and stoch_k > stoch_d:
+        if previous_stoch_k <= previous_stoch_d and stoch_k - stoch_d >= 2.0:
             strength = " from oversold" if min(previous_stoch_k, previous_stoch_d) <= 20 else ""
             bullish.append(f"Stochastic RSI crossed bullish{strength}")
-        elif previous_stoch_k >= previous_stoch_d and stoch_k < stoch_d:
+        elif previous_stoch_k >= previous_stoch_d and stoch_d - stoch_k >= 2.0:
             strength = " from overbought" if max(previous_stoch_k, previous_stoch_d) >= 80 else ""
             bearish.append(f"Stochastic RSI crossed bearish{strength}")
         mfi = float(getattr(analysis, "mfi", 50.0))
         previous_mfi = float(getattr(analysis, "previous_mfi", mfi))
         two_back_mfi = float(getattr(analysis, "two_back_mfi", previous_mfi))
-        if mfi > previous_mfi and previous_mfi <= two_back_mfi:
+        if mfi - previous_mfi >= 1.0 and previous_mfi <= two_back_mfi:
             bullish.append(f"MFI money flow turned upward ({previous_mfi:.1f}→{mfi:.1f})")
-        elif mfi < previous_mfi and previous_mfi >= two_back_mfi:
+        elif previous_mfi - mfi >= 1.0 and previous_mfi >= two_back_mfi:
             bearish.append(f"MFI money flow turned downward ({previous_mfi:.1f}→{mfi:.1f})")
         if not bullish and not bearish:
             if analysis.rsi < 28:
@@ -349,10 +349,13 @@ def evaluate_early_opportunity_alert(
         zone_high = float(opportunity["zone_high"])
         inside = zone_low <= signal.price <= zone_high
         distance = 0.0 if inside else min(abs(signal.price - zone_low), abs(signal.price - zone_high)) / max(signal.price, 1e-9) * 100.0
-        if distance <= 1.0:
-            watch_candidates.append((distance, opportunity_key, opportunity))
         taker_support = (side == "LONG" and taker_flow >= 15.0) or (side == "SHORT" and taker_flow <= -15.0)
         large_support = (side == "LONG" and large_flow >= 30.0) or (side == "SHORT" and large_flow <= -30.0)
+        taker_opposes = (side == "LONG" and taker_flow <= -15.0) or (side == "SHORT" and taker_flow >= 15.0)
+        large_opposes = (side == "LONG" and large_flow <= -30.0) or (side == "SHORT" and large_flow >= 30.0)
+        weak_and_strongly_opposed = analysis.relative_volume < profile.volume_confirmation and taker_opposes and large_opposes
+        if distance <= 1.0 and not weak_and_strongly_opposed:
+            watch_candidates.append((distance, opportunity_key, opportunity))
         countertrend = opportunity.get("relationship") == "COUNTERTREND"
         required_volume = profile.volume_confirmation * (1.15 if countertrend else 1.0)
         flow_confirmed = (taker_support and large_support) if countertrend else (taker_support or large_support)
@@ -947,6 +950,7 @@ def build_derivatives_alert_message(
             f"(directional beyond 57.5% / below 42.5%)",
             f"Largest trade: {price_text(derivatives.get('largest_trade_value', 0.0))} "
             f"{derivatives.get('largest_trade_side', 'UNKNOWN')} — "
+            f"{float(derivatives.get('largest_trade_multiple', 0.0)):.1f}× average",
             f"Large-trade net flow: {float(derivatives.get('large_flow_imbalance', 0.0)):+.1f}% "
             f"across {float(derivatives.get('large_flow_share', 0.0)):.1f}% of sampled value",
             f"Provider: {derivatives.get('provider', 'UNKNOWN')}",

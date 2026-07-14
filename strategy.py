@@ -753,16 +753,16 @@ def analyze_timeframe(
         score -= 8
         reasons.append(f"RSI exited overbought territory ({previous_rsi:.1f} → {rsi:.1f})")
 
-    if previous_rsi_6 <= previous_rsi_12 and rsi_6 > rsi_12:
+    if previous_rsi_6 <= previous_rsi_12 and rsi_6 - rsi_12 >= 0.5:
         score += 5
         reasons.append(f"RSI 6 crossed above RSI 12 ({rsi_6:.1f} > {rsi_12:.1f})")
-    elif previous_rsi_6 >= previous_rsi_12 and rsi_6 < rsi_12:
+    elif previous_rsi_6 >= previous_rsi_12 and rsi_12 - rsi_6 >= 0.5:
         score -= 5
         reasons.append(f"RSI 6 crossed below RSI 12 ({rsi_6:.1f} < {rsi_12:.1f})")
-    if previous_rsi_12 <= previous_rsi_24 and rsi_12 > rsi_24:
+    if previous_rsi_12 <= previous_rsi_24 and rsi_12 - rsi_24 >= 0.5:
         score += 6
         reasons.append(f"RSI 12 crossed above RSI 24 ({rsi_12:.1f} > {rsi_24:.1f})")
-    elif previous_rsi_12 >= previous_rsi_24 and rsi_12 < rsi_24:
+    elif previous_rsi_12 >= previous_rsi_24 and rsi_24 - rsi_12 >= 0.5:
         score -= 6
         reasons.append(f"RSI 12 crossed below RSI 24 ({rsi_12:.1f} < {rsi_24:.1f})")
 
@@ -819,13 +819,13 @@ def analyze_timeframe(
     # =====================================================
 
     bullish_stoch_rsi_cross = (
-        stoch_rsi_k > stoch_rsi_d
+        stoch_rsi_k - stoch_rsi_d >= 2.0
         and previous_stoch_rsi_k
         <= previous_stoch_rsi_d
     )
 
     bearish_stoch_rsi_cross = (
-        stoch_rsi_k < stoch_rsi_d
+        stoch_rsi_d - stoch_rsi_k >= 2.0
         and previous_stoch_rsi_k
         >= previous_stoch_rsi_d
     )
@@ -910,10 +910,10 @@ def analyze_timeframe(
             "MFI is overbought"
         )
 
-    if mfi > previous_mfi and previous_mfi <= two_back_mfi:
+    if mfi - previous_mfi >= 1.0 and previous_mfi <= two_back_mfi:
         score += 5
         reasons.append(f"MFI money flow turned upward ({previous_mfi:.1f} → {mfi:.1f})")
-    elif mfi < previous_mfi and previous_mfi >= two_back_mfi:
+    elif previous_mfi - mfi >= 1.0 and previous_mfi >= two_back_mfi:
         score -= 5
         reasons.append(f"MFI money flow turned downward ({previous_mfi:.1f} → {mfi:.1f})")
 
