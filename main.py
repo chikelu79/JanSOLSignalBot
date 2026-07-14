@@ -851,7 +851,11 @@ async def trade_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 f"🤖 Automatic planning is ON. {'LONG and SHORT plans are now armed.' if armed else 'The monitor will arm the next new structural levels.'}"
             )
         else:
-            await query.message.reply_text("🤖 Automatic planning is OFF. Existing armed plans remain active until disarmed, completed or expired.")
+            await query.message.reply_text(
+                "🤖 Automatic planning is OFF, so automatic monitoring is also OFF. "
+                "Existing armed plans remain stored until disarmed, completed or expired. "
+                "Use /monitor on to enable both again."
+            )
     elif action.startswith("arm:"):
         selection = action.split(":", 1)[1]
         symbol = get_selected_pair()
@@ -1239,7 +1243,8 @@ async def monitor_command(
             )
 
         await update.effective_message.reply_text(
-            "✅ Automatic monitoring enabled."
+            "✅ Automatic monitoring enabled.\n"
+            "🤖 Automatic planning enabled — the bot will continuously prepare and watch qualified LONG and SHORT plans."
         )
 
         return

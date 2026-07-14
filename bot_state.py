@@ -123,7 +123,8 @@ def validate_state(
             True,
         )
     )
-    validated["auto_plan_enabled"] = bool(state.get("auto_plan_enabled", DEFAULT_AUTO_PLAN_ENABLED))
+    # Continuous monitoring always includes automatic plan preparation.
+    validated["auto_plan_enabled"] = bool(state.get("auto_plan_enabled", DEFAULT_AUTO_PLAN_ENABLED)) or validated["monitor_enabled"]
     fingerprints = state.get("auto_plan_fingerprints", {})
     validated["auto_plan_fingerprints"] = {
         normalize_symbol(str(symbol)): str(value)
@@ -436,6 +437,8 @@ def set_monitor_enabled(
     STATE["monitor_enabled"] = bool(
         enabled
     )
+    if enabled:
+        STATE["auto_plan_enabled"] = True
 
     save_state(
         STATE
@@ -452,6 +455,8 @@ def is_auto_plan_enabled() -> bool:
 
 def set_auto_plan_enabled(enabled: bool) -> bool:
     STATE["auto_plan_enabled"] = bool(enabled)
+    if not enabled:
+        STATE["monitor_enabled"] = False
     save_state(STATE)
     return bool(STATE["auto_plan_enabled"])
 
