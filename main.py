@@ -33,6 +33,7 @@ from notifier import (
     evaluate_signal_alert,
     evaluate_derivatives_alert,
     evaluate_economic_alert,
+    evaluate_session_alert,
     price_text,
 )
 from strategy import (
@@ -1343,6 +1344,16 @@ async def monitor_loop(
                             text=economic_decision.message[:TELEGRAM_MESSAGE_LIMIT],
                         )
                         logger.info("Sent economic event alert: %s", economic_decision.reason)
+
+                session_decision = evaluate_session_alert()
+                if session_decision.should_send:
+                    destination = get_destination_chat_id()
+                    if destination:
+                        await application.bot.send_message(
+                            chat_id=destination,
+                            text=session_decision.message[:TELEGRAM_MESSAGE_LIMIT],
+                        )
+                        logger.info("Sent market timing alert: %s", session_decision.reason)
 
                 watchlist = get_watchlist()[
                     :MAX_MONITORED_PAIRS

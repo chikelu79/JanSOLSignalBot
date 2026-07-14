@@ -15,10 +15,12 @@ from notifier import (
     build_scan_message,
     evaluate_derivatives_alert,
     evaluate_economic_alert,
+    evaluate_session_alert,
     evaluate_signal_alert,
     setup_states,
 )
 from strategy import MarketSignal, TradePlan, create_trade_plan
+from session_context import get_session_context, get_special_market_event
 
 
 def main() -> None:
@@ -34,6 +36,11 @@ def main() -> None:
     assert economic_alert.alert_type in {"ECONOMIC_EVENT", "NONE"}
     lunar = get_lunar_context(datetime(2026, 7, 13, 20, 0, tzinfo=eastern))
     assert lunar.label == "NEAR NEW MOON"
+    assert get_session_context(datetime(2026, 7, 14, 9, 20, tzinfo=eastern)).label == "US OPEN"
+    assert get_session_context(datetime(2026, 7, 14, 3, 10, tzinfo=eastern)).label == "LONDON OPEN"
+    assert get_session_context(datetime(2026, 7, 14, 20, 0, tzinfo=eastern)).label == "ASIA OPEN"
+    assert "QUARTER-END" in get_special_market_event(datetime(2026, 9, 30, 15, 0, tzinfo=eastern))
+    assert evaluate_session_alert().alert_type in {"SESSION_TIMING", "NONE"}
     structural_analysis = SimpleNamespace(
         atr=2.0,
         support=95.0,

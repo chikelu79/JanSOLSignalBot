@@ -8,7 +8,7 @@ from typing import Any
 from bot_state import get_active_setups, remove_active_setup, set_active_setup
 from economic_calendar import format_event_time, get_economic_risk
 from lunar_context import get_lunar_context
-from session_context import get_session_context
+from session_context import get_session_context, get_special_market_event
 from strategy import MarketSignal, TradePlan, get_readiness_label, get_signal_grade
 
 WATCH_COOLDOWN_SECONDS = 20 * 60
@@ -20,6 +20,7 @@ RAPID_CHANGE_COOLDOWN_SECONDS = 15 * 60
 DERIVATIVES_ALERT_COOLDOWN_SECONDS = 30 * 60
 DERIVATIVES_EXIT_COOLDOWN_SECONDS = 15 * 60
 ECONOMIC_ALERT_COOLDOWN_SECONDS = 6 * 60 * 60
+SESSION_ALERT_COOLDOWN_SECONDS = 4 * 60 * 60
 RAPID_SCORE_CHANGE = 22.0
 
 last_alert_times: dict[str, float] = {}
@@ -459,6 +460,7 @@ def build_scan_message(signal: MarketSignal, context: Any | None = None) -> str:
     adjusted = float(getattr(context, "adjusted_score", signal.score))
     status, status_detail = execution_status(signal)
     session = get_session_context()
+    special_event = get_special_market_event()
     economic = get_economic_risk()
     lunar = get_lunar_context()
     reasons = list(signal.supporting_reasons)
@@ -487,6 +489,7 @@ def build_scan_message(signal: MarketSignal, context: Any | None = None) -> str:
         "SESSION CONTEXT",
         f"{session.label}: {session.detail}",
         f"Caution: {session.caution}",
+        f"Special timing: {special_event or 'No weekly, month-end or quarter-end close event.'}",
         "",
         "ECONOMIC CALENDAR",
         f"{'🔴' if economic.block_new_entries else '🟡' if economic.status == 'UPCOMING' else '🟢'} Risk: {economic.status}",
@@ -609,7 +612,7 @@ def build_derivatives_alert_message(
             f"(directional beyond 57.5% / below 42.5%)",
             f"Largest trade: {price_text(derivatives.get('largest_trade_value', 0.0))} "
             f"{derivatives.get('largest_trade_side', 'UNKNOWN')} — "
-            f"{float(derivatives.get('largest_trade_multiple', 0.0)):.1f}× median",
+            f"{float(derivatives.get('largest_trade_multiple', 0.0)):.1f}× average",
             f"Large-trade net flow: {float(derivatives.get('large_flow_imbalance', 0.0)):+.1f}% "
             f"across {float(derivatives.get('large_flow_share', 0.0)):.1f}% of sampled value",
             f"Provider: {derivatives.get('provider', 'UNKNOWN')}",
@@ -652,6 +655,32 @@ def evaluate_economic_alert() -> AlertDecision:
         ]
     )
     return AlertDecision(True, "ECONOMIC_EVENT", "MARKET", message, risk.detail)
+
+
+def evaluate_session_alert() -> AlertDecision:
+    session = get_session_context()
+    special_event = get_special_market_event()
+    important_sessions = {"LONDON OPEN", "US PREMARKET", "US OPEN", "US POWER HOUR", "ASIA OPEN", "WEEKEND"}
+    if session.label not in important_sessions and not special_event:
+        return AlertDecision(False, "NONE", "MARKET", "", "No major timing transition")
+
+    identity = special_event or session.label
+    key = make_alert_key("MARKET", "SESSION_TIMING", identity)
+    if not alert_allowed(key, SESSION_ALERT_COOLDOWN_SECONDS):
+        return AlertDecision(False, "NONE", "MARKET", "", "Session alert cooldown active")
+    mark_alert_sent(key)
+    message = "\n".join(
+        [
+            "🕒 MARKET TIMING ALERT",
+            "",
+            f"Session: {session.label}",
+            session.detail,
+            "",
+            f"Special timing: {special_event or 'No special close event.'}",
+            f"Action: {session.caution}",
+        ]
+    )
+    return AlertDecision(True, "SESSION_TIMING", "MARKET", message, identity)
 
 
 def evaluate_derivatives_alert(
@@ -843,6 +872,7 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
     last_signal_hashes[symbol] = current_hash
     state = setup_states.get(symbol)
     economic = get_economic_risk()
+    session = get_session_context()
 
     if state:
         plan = state["plan"]
@@ -910,6 +940,18 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
                 "High-impact economic event blocks new entries",
             )
         return AlertDecision(False, "NONE", symbol, "", "Economic event risk blocks entry")
+    if session.label == "US OPEN":
+        key = make_alert_key(symbol, "SESSION_RISK", session.label)
+        if alert_allowed(key, SESSION_ALERT_COOLDOWN_SECONDS):
+            mark_alert_sent(key)
+            return AlertDecision(
+                True,
+                "SESSION_RISK",
+                symbol,
+                build_alert_message(signal, "PREPARE", context, "US opening volatility temporarily blocks new entries. Wait for the opening range and retest."),
+                "US opening volatility blocks a new entry",
+            )
+        return AlertDecision(False, "NONE", symbol, "", "US open risk blocks entry")
     if previous_hash == current_hash:
         return AlertDecision(False, "NONE", symbol, "", "Duplicate signal")
     if status == "WATCH":
