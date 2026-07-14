@@ -226,6 +226,7 @@ def main() -> None:
             "derivatives": {
                 "funding_rate": 0.0006,
                 "funding_label": "CROWDED LONGS",
+                "perp_spot_basis": 0.32,
                 "open_interest_value": 250000000.0,
                 "open_interest_change_5m": 1.2,
                 "open_interest_change_1h": 6.5,
@@ -268,6 +269,7 @@ def main() -> None:
     )
     assert "Weak ETH dominance signals limited broad altcoin participation." in weak_eth_macro.macro_reasons
     assert "Funding: +0.0600%" in message
+    assert "Perpetual vs spot basis: +0.320% — LONG PREMIUM" in message
     assert "Derivatives source: Offline test" in message
     assert "OI change: +1.20% (5m), +6.50% (1h)" in message
     assert "crowded at ±0.0500%" in message

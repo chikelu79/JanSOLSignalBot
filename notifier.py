@@ -563,6 +563,10 @@ def format_market_context(context: Any | None) -> list[str]:
     fear_live = bool(getattr(context, "fear_greed_live", False))
     fear_suffix = "LIVE" if fear_live else "FALLBACK"
     funding_rate = float(getattr(context, "funding_rate", 0.0))
+    perp_basis = float(getattr(context, "perp_spot_basis", 0.0))
+    perp_basis_live = bool(getattr(context, "perp_spot_basis_live", False))
+    basis_label = "LONG PREMIUM" if perp_basis >= 0.25 else "SHORT DISCOUNT" if perp_basis <= -0.25 else "BALANCED"
+    basis_icon = "🔴" if abs(perp_basis) >= 0.25 else "🟡"
     funding_effect = "bearish crowding risk" if funding_rate >= 0.0005 else "bullish squeeze risk" if funding_rate <= -0.0005 else "neutral"
     oi_5m = float(getattr(context, "open_interest_change_5m", 0.0))
     oi_1h = float(getattr(context, "open_interest_change_1h", 0.0))
@@ -626,6 +630,11 @@ def format_market_context(context: Any | None) -> list[str]:
         f"{funding_icon} Funding: {funding_rate * 100:+.4f}% "
         f"({getattr(context, 'funding_label', 'UNAVAILABLE')}, "
         f"{funding_effect}; crowded at ±0.0500%)",
+        (
+            f"{basis_icon} Perpetual vs spot basis: {perp_basis:+.3f}% — {basis_label} (crowded at ±0.25%)"
+            if perp_basis_live
+            else "🔵 Perpetual vs spot basis: UNAVAILABLE (requires matching OKX spot and perpetual data)"
+        ),
         "",
         f"🔵 Open interest: ${getattr(context, 'open_interest_value', 0.0):,.0f} (baseline; direction comes from its % change)",
         f"{oi_icon} OI change: {oi_5m:+.2f}% (5m), {oi_1h:+.2f}% (1h) — {oi_regime} (high at ±5%/1h)",

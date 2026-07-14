@@ -106,6 +106,8 @@ class MarketContext:
 
     funding_rate: float
     funding_label: str
+    perp_spot_basis: float
+    perp_spot_basis_live: bool
     open_interest_value: float
     open_interest_change_5m: float
     open_interest_change_1h: float
@@ -736,7 +738,7 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
                     raise RuntimeError(f"OKX returned an error: {str(payload)[:250]}")
                 return payload
 
-        funding_payload, oi_payload, history_payload, liquidation_payload, instrument_payload, book_payload, trades_payload = await asyncio.gather(
+        funding_payload, oi_payload, history_payload, liquidation_payload, instrument_payload, book_payload, trades_payload, spot_payload = await asyncio.gather(
             get_payload("/api/v5/public/funding-rate", {"instId": instrument}),
             get_payload(
                 "/api/v5/public/open-interest",
@@ -762,6 +764,10 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
                 "/api/v5/market/trades",
                 {"instId": instrument, "limit": "500"},
             ),
+            get_payload(
+                "/api/v5/market/ticker",
+                {"instId": f"{base_asset}-USDT"},
+            ),
         )
 
     funding_data = funding_payload.get("data", [])
@@ -770,6 +776,7 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
     instrument_data = instrument_payload.get("data", [])
     book_data = book_payload.get("data", [])
     trades_data = trades_payload.get("data", [])
+    spot_data = spot_payload.get("data", [])
     if not funding_data or not oi_data or len(history) < 2 or not instrument_data or not book_data:
         raise RuntimeError("OKX returned insufficient derivatives data.")
 
@@ -838,6 +845,10 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
     best_bid = float(bids[0][0]) if bids else 0.0
     best_ask = float(asks[0][0]) if asks else 0.0
     midpoint = (best_bid + best_ask) / 2.0 if best_bid and best_ask else best_bid or best_ask
+    spot_bid = float(spot_data[0].get("bidPx", 0.0)) if spot_data else 0.0
+    spot_ask = float(spot_data[0].get("askPx", 0.0)) if spot_data else 0.0
+    spot_midpoint = (spot_bid + spot_ask) / 2.0 if spot_bid and spot_ask else spot_bid or spot_ask
+    perp_spot_basis = (midpoint / spot_midpoint - 1.0) * 100.0 if midpoint and spot_midpoint else 0.0
 
     def book_levels(levels: list[list[Any]], lower: float, upper: float) -> list[tuple[float, float]]:
         result: list[tuple[float, float]] = []
@@ -895,6 +906,7 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
     return {
         "funding_rate": funding_rate,
         "funding_label": funding_label,
+        "perp_spot_basis": perp_spot_basis,
         "open_interest": current_oi,
         "open_interest_value": current_value,
         "open_interest_change_5m": change_5m,
@@ -1755,6 +1767,8 @@ def build_market_context(
 
     funding_rate = 0.0
     funding_label = "UNAVAILABLE"
+    perp_spot_basis = 0.0
+    perp_spot_basis_live = False
     open_interest_value = 0.0
     open_interest_change_5m = 0.0
     open_interest_change_1h = 0.0
@@ -2011,6 +2025,8 @@ def build_market_context(
     if derivatives:
         funding_rate = float(derivatives.get("funding_rate", 0.0))
         funding_label = str(derivatives.get("funding_label", "BALANCED"))
+        perp_spot_basis = float(derivatives.get("perp_spot_basis", 0.0))
+        perp_spot_basis_live = "perp_spot_basis" in derivatives
         open_interest_value = float(derivatives.get("open_interest_value", 0.0))
         open_interest_change_5m = float(derivatives.get("open_interest_change_5m", 0.0))
         open_interest_change_1h = float(derivatives.get("open_interest_change_1h", 0.0))
@@ -2040,6 +2056,13 @@ def build_market_context(
         elif funding_rate <= -0.0005:
             derivatives_adjustment += 3.0
             warnings.append("Negative funding shows crowded leveraged shorts.")
+
+        if perp_spot_basis >= 0.25:
+            derivatives_adjustment -= 1.0
+            warnings.append("Perpetual futures trade well above spot, showing leveraged-long crowding.")
+        elif perp_spot_basis <= -0.25:
+            derivatives_adjustment += 1.0
+            warnings.append("Perpetual futures trade well below spot, showing leveraged-short crowding.")
 
         if open_interest_change_1h >= 5.0:
             direction_effect = 3.0 if selected_signal.score > 0 else -3.0
@@ -2154,6 +2177,8 @@ def build_market_context(
         coinbase_premium_live=coinbase_premium_live,
         funding_rate=funding_rate,
         funding_label=funding_label,
+        perp_spot_basis=perp_spot_basis,
+        perp_spot_basis_live=perp_spot_basis_live,
         open_interest_value=open_interest_value,
         open_interest_change_5m=open_interest_change_5m,
         open_interest_change_1h=open_interest_change_1h,
