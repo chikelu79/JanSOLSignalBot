@@ -17,6 +17,7 @@ from notifier import (
     build_early_opportunity_radar,
     build_radar_stats_message,
     build_scan_message,
+    build_success_stats_message,
     build_trade_dashboard,
     create_structural_trade_plans,
     evaluate_derivatives_alert,
@@ -33,6 +34,10 @@ from trading_profile import estimate_position, get_profile
 
 
 def main() -> None:
+    success_stats = build_success_stats_message()
+    assert "SIGNAL SUCCESS STATISTICS" in success_stats
+    assert "Success rate:" in success_stats
+    assert "Win = TP1 reached before the original stop." in success_stats
     normalized_premium = calculate_coinbase_premium(100.0, 100.1, 0.999)
     assert abs(normalized_premium - 0.0001) < 0.001
     conservative_scalp = get_profile("SCALPING", "CONSERVATIVE")

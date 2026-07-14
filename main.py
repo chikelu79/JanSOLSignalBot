@@ -48,6 +48,7 @@ from notifier import (
     build_active_setups_message,
     build_radar_stats_message,
     build_scan_message,
+    build_success_stats_message,
     build_trade_dashboard,
     create_structural_trade_plans,
     evaluate_signal_alert,
@@ -517,6 +518,7 @@ async def start_command(
         "/monitor off - Disable automatic alerts\n"
         "/setups - Show active managed setups\n"
         "/radarstats - Show opportunity-watch outcomes\n"
+        "/stats - Show confirmed-signal success rate\n"
         "/status - Bot and monitor status"
     )
 
@@ -1206,6 +1208,13 @@ async def radarstats_command(
     )
 
 
+async def stats_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    await send_long_message(update, build_success_stats_message())
+
+
 async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if context.args:
         if len(context.args) != 2:
@@ -1891,6 +1900,10 @@ async def post_init(
             "Show opportunity-watch outcomes",
         ),
         BotCommand(
+            "stats",
+            "Show confirmed-signal success rate",
+        ),
+        BotCommand(
             "status",
             "Show bot status",
         ),
@@ -2116,6 +2129,13 @@ def main() -> None:
         CommandHandler(
             "radarstats",
             radarstats_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "stats",
+            stats_command,
         )
     )
 

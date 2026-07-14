@@ -6,8 +6,8 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from bot_state import (
-    get_active_setups, get_armed_trade_plans, get_early_opportunities, get_early_opportunity_outcomes, get_risk_style, get_trading_horizon,
-    record_early_opportunity_outcome, remove_active_setup, remove_early_opportunity, set_active_setup, set_armed_trade_plans, set_early_opportunity,
+    get_active_setups, get_armed_trade_plans, get_early_opportunities, get_early_opportunity_outcomes, get_risk_style, get_signal_performance, get_trading_horizon,
+    record_early_opportunity_outcome, record_signal_performance, remove_active_setup, remove_early_opportunity, set_active_setup, set_armed_trade_plans, set_early_opportunity, update_signal_performance,
 )
 from economic_calendar import format_event_time, get_economic_risk
 from lunar_context import get_lunar_context
@@ -395,17 +395,10 @@ def evaluate_early_opportunity_alert(
         distance = 0.0 if inside else min(abs(signal.price - zone_low), abs(signal.price - zone_high)) / max(signal.price, 1e-9) * 100.0
         taker_support = (side == "LONG" and taker_flow >= 15.0) or (side == "SHORT" and taker_flow <= -15.0)
         large_support = (side == "LONG" and large_flow >= 30.0) or (side == "SHORT" and large_flow <= -30.0)
-        taker_opposes = (side == "LONG" and taker_flow <= -15.0) or (side == "SHORT" and taker_flow >= 15.0)
-        large_opposes = (side == "LONG" and large_flow <= -30.0) or (side == "SHORT" and large_flow >= 30.0)
         countertrend = opportunity.get("relationship") == "COUNTERTREND"
         required_volume = profile.volume_confirmation * (1.15 if countertrend else 1.0)
         flow_confirmed = (taker_support and large_support) if countertrend else (taker_support or large_support)
-        weak_and_strongly_opposed = analysis.relative_volume < profile.volume_confirmation and taker_opposes and large_opposes
-        proactive_ready = (
-            analysis.relative_volume >= required_volume and flow_confirmed
-            if countertrend
-            else not weak_and_strongly_opposed
-        )
+        proactive_ready = analysis.relative_volume >= required_volume and flow_confirmed
         if distance <= 1.0 and proactive_ready:
             watch_candidates.append((distance, opportunity_key, opportunity))
         if not active and inside and analysis.relative_volume >= required_volume and flow_confirmed:
@@ -427,11 +420,13 @@ def evaluate_early_opportunity_alert(
                 risk_per_unit=risk, reward_risk_tp1=1.25,
                 reward_risk_tp2=2.0, reward_risk_tp3=3.0,
             )
+            signal_id = record_entry_signal("TACTICAL", signal.symbol, side, plan, interval)
             setup_states[signal.symbol] = {
                 "side": side, "plan": plan, "created_at": now,
                 "tp1": False, "tp2": False, "breakeven": False,
                 "management_stop": plan.stop_loss, "exit_warning": False,
                 "tactical": True, "origin_interval": interval,
+                "signal_id": signal_id,
             }
             _persist_setup(signal.symbol, setup_states[signal.symbol])
             record_early_opportunity_outcome(opportunity, "CONFIRMED", signal.price, now)
@@ -511,6 +506,62 @@ def build_radar_stats_message() -> str:
     return "\n".join(lines)
 
 
+def record_entry_signal(source: str, symbol: str, side: str, plan: Any, timeframe: str = "") -> str:
+    now = time.time()
+    signal_id = f"{source}:{symbol}:{side}:{int(now * 1000)}"
+    value = lambda name: float(plan[name] if isinstance(plan, dict) else getattr(plan, name))
+    entry = (value("entry_low") + value("entry_high")) / 2.0 if not isinstance(plan, dict) else (value("zone_low") + value("zone_high")) / 2.0
+    record_signal_performance({
+        "id": signal_id, "source": source, "symbol": symbol, "side": side,
+        "profile": f"{get_trading_horizon()} / {get_risk_style()}", "timeframe": timeframe,
+        "entry": entry, "stop": value("stop_loss") if not isinstance(plan, dict) else value("stop"),
+        "tp1": value("tp1"), "tp2": value("tp2"), "tp3": value("tp3"),
+        "sent_at": now, "status": "OPEN", "tp1_hit": False, "tp2_hit": False,
+        "tp3_hit": False, "closed_at": 0.0,
+    })
+    return signal_id
+
+
+def build_success_stats_message() -> str:
+    records = get_signal_performance()
+    open_records = [item for item in records if item.get("status") == "OPEN"]
+    won = [item for item in records if item.get("status") == "WON"]
+    lost = [item for item in records if item.get("status") == "LOST"]
+    exited = [item for item in records if item.get("status") == "EXITED"]
+    resolved = len(won) + len(lost)
+    success_rate = len(won) / resolved * 100.0 if resolved else 0.0
+    tp1 = sum(bool(item.get("tp1_hit")) for item in records)
+    tp2 = sum(bool(item.get("tp2_hit")) for item in records)
+    tp3 = sum(bool(item.get("tp3_hit")) for item in records)
+    lines = [
+        "📊 SIGNAL SUCCESS STATISTICS", "",
+        f"Confirmed entry signals sent: {len(records)}", f"Open: {len(open_records)}",
+        f"Won (TP1 before stop): {len(won)}", f"Lost (stop before TP1): {len(lost)}",
+        f"Exited without TP1: {len(exited)}", "",
+        f"Success rate: {success_rate:.1f}% ({len(won)}/{resolved} resolved signals)",
+        f"TP1 hits: {tp1} | TP2 hits: {tp2} | TP3 hits: {tp3}",
+    ]
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for item in records:
+        groups.setdefault(f"{item.get('profile', 'UNKNOWN')} • {item.get('timeframe') or 'profile setup'}", []).append(item)
+    if groups:
+        lines.extend(["", "BY PROFILE / TIMEFRAME"])
+        for label, items in sorted(groups.items()):
+            group_won = sum(item.get("status") == "WON" for item in items)
+            group_lost = sum(item.get("status") == "LOST" for item in items)
+            denominator = group_won + group_lost
+            rate = group_won / denominator * 100.0 if denominator else 0.0
+            lines.append(f"• {label}: {rate:.1f}% ({group_won}/{denominator}; {sum(item.get('status') == 'OPEN' for item in items)} open)")
+    lines.extend([
+        "", "COUNTING RULES",
+        "• Win = TP1 reached before the original stop.",
+        "• Open and discretionary exits are excluded from the success-rate denominator.",
+        "• Early watches, news, liquidation and whale-flow alerts are not counted as entry signals.",
+        "• Results are signal observations, not verified exchange P&L.",
+    ])
+    return "\n".join(lines)
+
+
 def create_structural_trade_plans(signal: MarketSignal) -> dict[str, dict[str, Any]]:
     profile = get_profile(get_trading_horizon(), get_risk_style())
     analyses = [(interval, signal.analyses[interval]) for interval in profile.primary_timeframes if interval in signal.analyses]
@@ -557,9 +608,28 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
         plan = plans.get(side)
         if not plan:
             continue
+        signal_id = str(plan.get("signal_id", ""))
+        performance_record = next((item for item in get_signal_performance() if item.get("id") == signal_id), None) if signal_id else None
+        if performance_record:
+            hit_tp1 = signal.price >= float(plan["tp1"]) if side == "LONG" else signal.price <= float(plan["tp1"])
+            hit_tp2 = signal.price >= float(plan["tp2"]) if side == "LONG" else signal.price <= float(plan["tp2"])
+            hit_tp3 = signal.price >= float(plan["tp3"]) if side == "LONG" else signal.price <= float(plan["tp3"])
+            if hit_tp3:
+                update_signal_performance(signal_id, status="WON", tp1_hit=True, tp2_hit=True, tp3_hit=True, closed_at=now)
+            elif hit_tp2:
+                update_signal_performance(signal_id, status="WON", tp1_hit=True, tp2_hit=True)
+            elif hit_tp1:
+                update_signal_performance(signal_id, status="WON", tp1_hit=True)
         invalidated = signal.price <= float(plan["stop"]) if side == "LONG" else signal.price >= float(plan["stop"])
         expired = now >= float(plan["expires_at"])
         if invalidated or expired:
+            if signal_id:
+                current = next((item for item in get_signal_performance() if item.get("id") == signal_id), {})
+                update_signal_performance(
+                    signal_id,
+                    status="WON" if current.get("tp1_hit") else "LOST" if invalidated else "EXITED",
+                    closed_at=now,
+                )
             plans.pop(side, None)
             set_armed_trade_plans(signal.symbol, plans)
             reason = "INVALIDATED" if invalidated else "EXPIRED"
@@ -580,6 +650,7 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
         ready = inside and volume_ok and flow_ok and momentum_ok and not event_block
         if ready and not bool(plan.get("ready_alerted", False)):
             plan["ready_alerted"] = True
+            plan["signal_id"] = record_entry_signal("ARMED", signal.symbol, side, plan, str(plan["interval"]))
             plans[side] = plan
             set_armed_trade_plans(signal.symbol, plans)
             return AlertDecision(True, "ARMED_PLAN_READY", signal.symbol, "\n".join([
@@ -1600,20 +1671,33 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
         price = signal.price
         management_stop = float(state.get("management_stop", plan.stop_loss))
         if (side == "LONG" and price <= management_stop) or (side == "SHORT" and price >= management_stop):
+            signal_id = str(state.get("signal_id", ""))
+            if signal_id:
+                update_signal_performance(
+                    signal_id,
+                    status="WON" if state.get("tp1") else "LOST",
+                    closed_at=time.time(),
+                )
             _clear_setup(symbol)
             alert_type = "PROTECTED_STOP" if state.get("tp1") or state.get("breakeven") else "INVALIDATED"
             reason = "Protected stop reached" if alert_type == "PROTECTED_STOP" else "Stop or invalidation reached"
             return _decision(signal, context, alert_type, reason, f"Exit the remaining managed position; protection at {price_text(management_stop)} was reached.", MANAGEMENT_COOLDOWN_SECONDS)
         if side == "LONG":
             if price >= plan.tp3:
+                if state.get("signal_id"):
+                    update_signal_performance(state["signal_id"], status="WON", tp1_hit=True, tp2_hit=True, tp3_hit=True, closed_at=time.time())
                 _clear_setup(symbol)
                 return _decision(signal, context, "TP3", "Final target reached", "Close the remaining 40% and record the completed setup.", MANAGEMENT_COOLDOWN_SECONDS)
             if price >= plan.tp2 and not state.get("tp2"):
+                if state.get("signal_id"):
+                    update_signal_performance(state["signal_id"], status="WON", tp1_hit=True, tp2_hit=True)
                 state["tp2"] = True
                 state["management_stop"] = plan.tp1
                 _persist_setup(symbol, state)
                 return _decision(signal, context, "TP2", "Second target reached", f"Consider taking another 30% and protecting the remainder near TP1 at {price_text(plan.tp1)}.", MANAGEMENT_COOLDOWN_SECONDS)
             if price >= plan.tp1 and not state.get("tp1"):
+                if state.get("signal_id"):
+                    update_signal_performance(state["signal_id"], status="WON", tp1_hit=True)
                 state["tp1"] = True
                 state["breakeven"] = True
                 state["management_stop"] = (plan.entry_low + plan.entry_high) / 2.0
@@ -1627,18 +1711,26 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
             tactical_analysis = signal.analyses.get(str(state.get("origin_interval", ""))) if state.get("tactical") else None
             reversed_now = tactical_analysis.score <= -get_profile(get_trading_horizon(), get_risk_style()).watch_threshold if tactical_analysis is not None else adjusted < -20
             if reversed_now:
+                if state.get("signal_id"):
+                    update_signal_performance(state["signal_id"], status="WON" if state.get("tp1") else "EXITED", closed_at=time.time())
                 _clear_setup(symbol)
                 return _decision(signal, context, "EXIT", "Direction reversed", "The model turned materially bearish; reassess or exit the remaining position.", MANAGEMENT_COOLDOWN_SECONDS)
         else:
             if price <= plan.tp3:
+                if state.get("signal_id"):
+                    update_signal_performance(state["signal_id"], status="WON", tp1_hit=True, tp2_hit=True, tp3_hit=True, closed_at=time.time())
                 _clear_setup(symbol)
                 return _decision(signal, context, "TP3", "Final target reached", "Close the remaining 40% and record the completed setup.", MANAGEMENT_COOLDOWN_SECONDS)
             if price <= plan.tp2 and not state.get("tp2"):
+                if state.get("signal_id"):
+                    update_signal_performance(state["signal_id"], status="WON", tp1_hit=True, tp2_hit=True)
                 state["tp2"] = True
                 state["management_stop"] = plan.tp1
                 _persist_setup(symbol, state)
                 return _decision(signal, context, "TP2", "Second target reached", f"Consider taking another 30% and protecting the remainder near TP1 at {price_text(plan.tp1)}.", MANAGEMENT_COOLDOWN_SECONDS)
             if price <= plan.tp1 and not state.get("tp1"):
+                if state.get("signal_id"):
+                    update_signal_performance(state["signal_id"], status="WON", tp1_hit=True)
                 state["tp1"] = True
                 state["breakeven"] = True
                 state["management_stop"] = (plan.entry_low + plan.entry_high) / 2.0
@@ -1652,6 +1744,8 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
             tactical_analysis = signal.analyses.get(str(state.get("origin_interval", ""))) if state.get("tactical") else None
             reversed_now = tactical_analysis.score >= get_profile(get_trading_horizon(), get_risk_style()).watch_threshold if tactical_analysis is not None else adjusted > 20
             if reversed_now:
+                if state.get("signal_id"):
+                    update_signal_performance(state["signal_id"], status="WON" if state.get("tp1") else "EXITED", closed_at=time.time())
                 _clear_setup(symbol)
                 return _decision(signal, context, "EXIT", "Direction reversed", "The model turned materially bullish; reassess or exit the remaining position.", MANAGEMENT_COOLDOWN_SECONDS)
 
@@ -1720,6 +1814,10 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
     if status == "PREPARE" and signal.stage not in {"CONFIRMED", "STRONG"}:
         return _decision(signal, context, "PREPARE", "Price reached entry area", note, PREPARE_COOLDOWN_SECONDS)
     if status == "PREPARE" and signal.stage in {"CONFIRMED", "STRONG"}:
+        entry_key = make_alert_key(symbol, "ENTRY", signal.trade_plan.side)
+        if not alert_allowed(entry_key, ENTRY_COOLDOWN_SECONDS):
+            return AlertDecision(False, "NONE", symbol, "", "Entry alert cooldown active")
+        signal_id = record_entry_signal("PROFILE", symbol, signal.trade_plan.side, signal.trade_plan)
         setup_states[symbol] = {
             "side": signal.trade_plan.side,
             "plan": signal.trade_plan,
@@ -1731,6 +1829,7 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
             "exit_warning": False,
             "tactical": False,
             "origin_interval": "",
+            "signal_id": signal_id,
         }
         _persist_setup(symbol, setup_states[symbol])
         return _decision(signal, context, "ENTRY", "Setup confirmed at planned level", "Entry is confirmed near the planned zone. Avoid entering outside the displayed range.", ENTRY_COOLDOWN_SECONDS)

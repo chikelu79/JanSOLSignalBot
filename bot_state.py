@@ -30,6 +30,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "early_opportunities": {},
     "early_opportunity_outcomes": [],
     "armed_trade_plans": {},
+    "signal_performance": [],
     "trading_horizon": "DAY",
     "risk_style": "BALANCED",
 }
@@ -190,6 +191,7 @@ def validate_state(
                     "exit_warning": bool(setup.get("exit_warning", False)),
                     "tactical": bool(setup.get("tactical", False)),
                     "origin_interval": str(setup.get("origin_interval", "")),
+                    "signal_id": str(setup.get("signal_id", "")),
                 }
             except (KeyError, TypeError, ValueError):
                 continue
@@ -270,12 +272,37 @@ def validate_state(
                         "created_at": float(item["created_at"]), "expires_at": float(item["expires_at"]),
                         "zone_alerted": bool(item.get("zone_alerted", False)),
                         "ready_alerted": bool(item.get("ready_alerted", False)),
+                        "signal_id": str(item.get("signal_id", "")),
                     }
                 except (KeyError, TypeError, ValueError):
                     continue
             if clean_sides:
                 validated_armed[normalize_symbol(str(symbol))] = clean_sides
     validated["armed_trade_plans"] = validated_armed
+
+    performance = state.get("signal_performance", [])
+    validated_performance: list[dict[str, Any]] = []
+    if isinstance(performance, list):
+        for item in performance[-500:]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                status = str(item.get("status", "OPEN")).upper()
+                if status not in {"OPEN", "WON", "LOST", "EXITED"}:
+                    continue
+                validated_performance.append({
+                    "id": str(item["id"]), "source": str(item["source"]),
+                    "symbol": normalize_symbol(str(item["symbol"])), "side": str(item["side"]).upper(),
+                    "profile": str(item.get("profile", "UNKNOWN")), "timeframe": str(item.get("timeframe", "")),
+                    "entry": float(item["entry"]), "stop": float(item["stop"]),
+                    "tp1": float(item["tp1"]), "tp2": float(item["tp2"]), "tp3": float(item["tp3"]),
+                    "sent_at": float(item["sent_at"]), "status": status,
+                    "tp1_hit": bool(item.get("tp1_hit", False)), "tp2_hit": bool(item.get("tp2_hit", False)),
+                    "tp3_hit": bool(item.get("tp3_hit", False)), "closed_at": float(item.get("closed_at", 0.0)),
+                })
+            except (KeyError, TypeError, ValueError):
+                continue
+    validated["signal_performance"] = validated_performance
 
     return validated
 
@@ -532,6 +559,7 @@ def get_state_snapshot() -> dict[str, Any]:
         "early_opportunities": get_early_opportunities(),
         "early_opportunity_outcomes": get_early_opportunity_outcomes(),
         "armed_trade_plans": get_armed_trade_plans(),
+        "signal_performance": get_signal_performance(),
         "trading_horizon": get_trading_horizon(),
         "risk_style": get_risk_style(),
     }
@@ -633,4 +661,26 @@ def remove_armed_trade_plans(symbol: str) -> None:
     armed = dict(STATE.get("armed_trade_plans", {}))
     armed.pop(normalize_symbol(symbol), None)
     STATE["armed_trade_plans"] = armed
+    save_state(STATE)
+
+
+def get_signal_performance() -> list[dict[str, Any]]:
+    return json.loads(json.dumps(STATE.get("signal_performance", [])))
+
+
+def record_signal_performance(record: dict[str, Any]) -> None:
+    records = list(STATE.get("signal_performance", []))
+    if not any(str(item.get("id")) == str(record.get("id")) for item in records):
+        records.append(record)
+    STATE["signal_performance"] = records[-500:]
+    save_state(STATE)
+
+
+def update_signal_performance(signal_id: str, **changes: Any) -> None:
+    records = list(STATE.get("signal_performance", []))
+    for item in records:
+        if str(item.get("id")) == str(signal_id):
+            item.update(changes)
+            break
+    STATE["signal_performance"] = records[-500:]
     save_state(STATE)
