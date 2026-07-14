@@ -261,6 +261,13 @@ def main() -> None:
     assert "REVERSAL / PATTERN CLUES" in trade_dashboard
     assert "Provisional TP1:" in trade_dashboard and "Provisional TP3:" in trade_dashboard
     assert "Use /scan for the complete evidence report." in trade_dashboard
+    signal.analyses["15m"].divergences = ["Bearish regular divergence"]
+    conflicting_dashboard = build_trade_dashboard(
+        signal,
+        SimpleNamespace(adjusted_score=25.0, taker_flow_imbalance=-79.7, large_flow_imbalance=-100.0),
+    )
+    assert "FOCUS: NO CLEAR DIRECTION — WAIT" in conflicting_dashboard
+    signal.analyses["15m"].divergences = []
     generated_plans = create_structural_trade_plans(signal)
     assert set(generated_plans) == {"LONG", "SHORT"}
     armed_long = {

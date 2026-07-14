@@ -820,19 +820,29 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
 
     def plan(side: str, level: float, interval: str, analysis: Any) -> tuple[list[str], dict[str, Any]]:
         atr = max(float(analysis.atr), price * 0.002)
+        directional_clues = [
+            str(value).lower()
+            for value in (
+                list(getattr(analysis, "candle_patterns", []))
+                + list(getattr(analysis, "chart_structures", []))
+                + list(getattr(analysis, "divergences", []))
+            )
+        ]
         if side == "LONG":
             zone_low, zone_high = level, level + atr * 0.25
             stop = level - atr * 0.75
             direction = 1.0
             flow_support = taker_flow >= 15.0 or large_flow >= 30.0
-            momentum_support = analysis.score >= 20.0
+            opposing_clue = any("bearish" in clue for clue in directional_clues)
+            momentum_support = analysis.score >= 20.0 and not opposing_clue
             trigger = "bullish reversal close + RSI/Stoch turn upward"
         else:
             zone_low, zone_high = level - atr * 0.25, level
             stop = level + atr * 0.75
             direction = -1.0
             flow_support = taker_flow <= -15.0 or large_flow <= -30.0
-            momentum_support = analysis.score <= -20.0
+            opposing_clue = any("bullish" in clue for clue in directional_clues)
+            momentum_support = analysis.score <= -20.0 and not opposing_clue
             trigger = "bearish rejection close + RSI/Stoch turn downward"
         midpoint = (zone_low + zone_high) / 2.0
         risk = abs(midpoint - stop)
@@ -866,6 +876,7 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
             "volume_ok": volume_ok, "flow_support": flow_support,
             "momentum_support": momentum_support, "candle_ok": candle_ok, "trigger": trigger,
             "directional_support": sum((momentum_support, candle_ok, flow_support)),
+            "opposing_clue": opposing_clue,
             "compressed": float(getattr(analysis, "bollinger_width", 99.0)) < 3.0,
         }
 
@@ -880,7 +891,9 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
     )
     focus, alternative = ranked_focus
     focus_is_clear = (
-        focus["directional_support"] >= 2
+        focus["flow_support"]
+        and (focus["momentum_support"] or focus["candle_ok"])
+        and not focus["opposing_clue"]
         and focus["directional_support"] > alternative["directional_support"]
     )
     focus_side = focus["side"]
