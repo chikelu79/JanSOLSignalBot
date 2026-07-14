@@ -1135,6 +1135,18 @@ async def market_command(
                 f"VIX: {macro_context.vix_value:.2f} "
                 f"({macro_context.vix_regime})"
             ),
+            (
+                f"Funding: {macro_context.funding_rate * 100:+.4f}% "
+                f"({macro_context.funding_label}, {macro_context.derivatives_provider})"
+            ),
+            (
+                f"Open interest: ${macro_context.open_interest_value:,.0f}"
+            ),
+            (
+                "OI change: "
+                f"{macro_context.open_interest_change_5m:+.2f}% (5m), "
+                f"{macro_context.open_interest_change_1h:+.2f}% (1h)"
+            ),
             ]    
         if macro_context.macro_reasons:
             lines.extend([

@@ -49,6 +49,10 @@ FRED_VIX_CSV_URL = (
     "fredgraph.csv?id=VIXCLS"
 )
 
+BINANCE_FUTURES_BASE_URL = "https://fapi.binance.com"
+BYBIT_BASE_URL = "https://api.bybit.com"
+OKX_BASE_URL = "https://www.okx.com"
+
 
 # =========================================================
 # RESULT MODEL
@@ -87,6 +91,15 @@ class MarketContext:
     fear_greed_label: str
     fear_greed_change: float
     fear_greed_live: bool
+
+    funding_rate: float
+    funding_label: str
+    open_interest_value: float
+    open_interest_change_5m: float
+    open_interest_change_1h: float
+    derivatives_live: bool
+    derivatives_adjustment: float
+    derivatives_provider: str
 
     reasons: list[str]
     warnings: list[str]
@@ -517,6 +530,220 @@ async def fetch_vix() -> dict[str, float]:
 
 
 # =========================================================
+# FUTURES POSITIONING
+# =========================================================
+
+async def _fetch_binance_derivatives_context(symbol: str) -> dict[str, Any]:
+    timeout = aiohttp.ClientTimeout(total=20, connect=8, sock_read=15)
+    headers = {"Accept": "application/json", "User-Agent": "JanCryptoSignalBot/2.0"}
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        async def get_payload(path: str, params: dict[str, Any]) -> Any:
+            async with session.get(f"{BINANCE_FUTURES_BASE_URL}{path}", params=params) as response:
+                text = await response.text()
+                if response.status != 200:
+                    raise RuntimeError(f"Binance Futures HTTP {response.status}: {text[:250]}")
+                return await response.json(content_type=None)
+
+        funding_result, oi_result, oi_history_result = await asyncio.gather(
+            get_payload("/fapi/v1/fundingRate", {"symbol": symbol, "limit": 2}),
+            get_payload("/fapi/v1/openInterest", {"symbol": symbol}),
+            get_payload(
+                "/futures/data/openInterestHist",
+                {"symbol": symbol, "period": "5m", "limit": 13},
+            ),
+        )
+
+    if not isinstance(funding_result, list) or not funding_result:
+        raise RuntimeError("Binance Futures returned no funding history.")
+    if not isinstance(oi_result, dict):
+        raise RuntimeError("Binance Futures returned invalid open interest.")
+    if not isinstance(oi_history_result, list) or len(oi_history_result) < 2:
+        raise RuntimeError("Binance Futures returned insufficient open-interest history.")
+
+    funding_rate = float(funding_result[-1]["fundingRate"])
+    current_oi = float(oi_result["openInterest"])
+    history_values = [float(item["sumOpenInterestValue"]) for item in oi_history_result]
+    previous_5m = history_values[-2]
+    previous_1h = history_values[0]
+    current_value = history_values[-1]
+    change_5m = (current_value / previous_5m - 1.0) * 100.0 if previous_5m else 0.0
+    change_1h = (current_value / previous_1h - 1.0) * 100.0 if previous_1h else 0.0
+
+    absolute_funding = abs(funding_rate)
+    if absolute_funding >= 0.001:
+        funding_label = "EXTREME LONGS" if funding_rate > 0 else "EXTREME SHORTS"
+    elif absolute_funding >= 0.0005:
+        funding_label = "CROWDED LONGS" if funding_rate > 0 else "CROWDED SHORTS"
+    elif absolute_funding >= 0.0001:
+        funding_label = "LONGS PAY" if funding_rate > 0 else "SHORTS PAY"
+    else:
+        funding_label = "BALANCED"
+
+    return {
+        "funding_rate": funding_rate,
+        "funding_label": funding_label,
+        "open_interest": current_oi,
+        "open_interest_value": current_value,
+        "open_interest_change_5m": change_5m,
+        "open_interest_change_1h": change_1h,
+        "live": True,
+        "provider": "Binance Futures",
+    }
+
+
+async def _fetch_bybit_derivatives_context(symbol: str) -> dict[str, Any]:
+    timeout = aiohttp.ClientTimeout(total=20, connect=8, sock_read=15)
+    headers = {"Accept": "application/json", "User-Agent": "JanCryptoSignalBot/2.0"}
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        async def get_payload(path: str, params: dict[str, Any]) -> dict[str, Any]:
+            async with session.get(f"{BYBIT_BASE_URL}{path}", params=params) as response:
+                text = await response.text()
+                if response.status != 200:
+                    raise RuntimeError(f"Bybit HTTP {response.status}: {text[:250]}")
+                payload = await response.json(content_type=None)
+                if not isinstance(payload, dict) or int(payload.get("retCode", -1)) != 0:
+                    raise RuntimeError(f"Bybit returned an error: {str(payload)[:250]}")
+                return payload
+
+        ticker_payload, history_payload = await asyncio.gather(
+            get_payload("/v5/market/tickers", {"category": "linear", "symbol": symbol}),
+            get_payload(
+                "/v5/market/open-interest",
+                {"category": "linear", "symbol": symbol, "intervalTime": "5min", "limit": 13},
+            ),
+        )
+
+    tickers = ticker_payload.get("result", {}).get("list", [])
+    history = history_payload.get("result", {}).get("list", [])
+    if not tickers or len(history) < 2:
+        raise RuntimeError("Bybit returned insufficient derivatives data.")
+    ticker = tickers[0]
+    ordered_history = sorted(history, key=lambda item: int(item["timestamp"]))
+    history_values = [float(item["openInterest"]) for item in ordered_history]
+    previous_5m = history_values[-2]
+    previous_1h = history_values[0]
+    current_oi = float(ticker["openInterest"])
+    current_value = float(ticker.get("openInterestValue", 0.0))
+    change_5m = (current_oi / previous_5m - 1.0) * 100.0 if previous_5m else 0.0
+    change_1h = (current_oi / previous_1h - 1.0) * 100.0 if previous_1h else 0.0
+    funding_rate = float(ticker["fundingRate"])
+
+    absolute_funding = abs(funding_rate)
+    if absolute_funding >= 0.001:
+        funding_label = "EXTREME LONGS" if funding_rate > 0 else "EXTREME SHORTS"
+    elif absolute_funding >= 0.0005:
+        funding_label = "CROWDED LONGS" if funding_rate > 0 else "CROWDED SHORTS"
+    elif absolute_funding >= 0.0001:
+        funding_label = "LONGS PAY" if funding_rate > 0 else "SHORTS PAY"
+    else:
+        funding_label = "BALANCED"
+
+    return {
+        "funding_rate": funding_rate,
+        "funding_label": funding_label,
+        "open_interest": current_oi,
+        "open_interest_value": current_value,
+        "open_interest_change_5m": change_5m,
+        "open_interest_change_1h": change_1h,
+        "live": True,
+        "provider": "Bybit Futures fallback",
+    }
+
+
+async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
+    if not symbol.endswith("USDT"):
+        raise RuntimeError("OKX fallback currently supports USDT pairs only.")
+    base_asset = symbol[:-4]
+    instrument = f"{base_asset}-USDT-SWAP"
+    timeout = aiohttp.ClientTimeout(total=20, connect=8, sock_read=15)
+    headers = {"Accept": "application/json", "User-Agent": "JanCryptoSignalBot/2.0"}
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        async def get_payload(path: str, params: dict[str, Any]) -> dict[str, Any]:
+            async with session.get(f"{OKX_BASE_URL}{path}", params=params) as response:
+                text = await response.text()
+                if response.status != 200:
+                    raise RuntimeError(f"OKX HTTP {response.status}: {text[:250]}")
+                payload = await response.json(content_type=None)
+                if not isinstance(payload, dict) or str(payload.get("code")) != "0":
+                    raise RuntimeError(f"OKX returned an error: {str(payload)[:250]}")
+                return payload
+
+        funding_payload, oi_payload, history_payload = await asyncio.gather(
+            get_payload("/api/v5/public/funding-rate", {"instId": instrument}),
+            get_payload(
+                "/api/v5/public/open-interest",
+                {"instType": "SWAP", "instId": instrument},
+            ),
+            get_payload(
+                "/api/v5/rubik/stat/contracts/open-interest-history",
+                {"instId": instrument, "period": "5m"},
+            ),
+        )
+
+    funding_data = funding_payload.get("data", [])
+    oi_data = oi_payload.get("data", [])
+    history = history_payload.get("data", [])
+    if not funding_data or not oi_data or len(history) < 2:
+        raise RuntimeError("OKX returned insufficient derivatives data.")
+
+    funding_rate = float(funding_data[0]["fundingRate"])
+    current_oi = float(oi_data[0]["oi"])
+    current_value = float(oi_data[0]["oiUsd"])
+    previous_5m = float(history[1][3])
+    previous_1h = float(history[min(12, len(history) - 1)][3])
+    latest_history_value = float(history[0][3])
+    change_5m = (
+        (latest_history_value / previous_5m - 1.0) * 100.0
+        if previous_5m
+        else 0.0
+    )
+    change_1h = (
+        (latest_history_value / previous_1h - 1.0) * 100.0
+        if previous_1h
+        else 0.0
+    )
+
+    absolute_funding = abs(funding_rate)
+    if absolute_funding >= 0.001:
+        funding_label = "EXTREME LONGS" if funding_rate > 0 else "EXTREME SHORTS"
+    elif absolute_funding >= 0.0005:
+        funding_label = "CROWDED LONGS" if funding_rate > 0 else "CROWDED SHORTS"
+    elif absolute_funding >= 0.0001:
+        funding_label = "LONGS PAY" if funding_rate > 0 else "SHORTS PAY"
+    else:
+        funding_label = "BALANCED"
+
+    return {
+        "funding_rate": funding_rate,
+        "funding_label": funding_label,
+        "open_interest": current_oi,
+        "open_interest_value": current_value,
+        "open_interest_change_5m": change_5m,
+        "open_interest_change_1h": change_1h,
+        "live": True,
+        "provider": "OKX Futures fallback",
+    }
+
+
+async def fetch_derivatives_context(symbol: str) -> dict[str, Any]:
+    try:
+        return await _fetch_okx_derivatives_context(symbol)
+    except Exception as okx_error:
+        logger.warning("OKX Futures data unavailable for %s: %s", symbol, okx_error)
+        try:
+            result = await _fetch_binance_derivatives_context(symbol)
+            result["fallback_reason"] = type(okx_error).__name__
+            return result
+        except Exception as binance_error:
+            logger.warning("Binance Futures data unavailable for %s: %s", symbol, binance_error)
+            result = await _fetch_bybit_derivatives_context(symbol)
+            result["fallback_reason"] = (
+                f"{type(okx_error).__name__}, {type(binance_error).__name__}"
+            )
+            return result
+
+
+# =========================================================
 # COMPLETE RAW CONTEXT
 # =========================================================
 
@@ -547,12 +774,17 @@ async def get_market_context_data(
         fetch_fear_greed()
     )
 
+    derivatives_task = asyncio.create_task(
+        fetch_derivatives_context(selected_symbol)
+    )
+
     results = await asyncio.gather(
         btc_task,
         eth_task,
         global_task,
         vix_task,
         fear_greed_task,
+        derivatives_task,
         return_exceptions=True,
     )
 
@@ -562,6 +794,7 @@ async def get_market_context_data(
         "global_crypto",
         "vix",
         "fear_greed",
+        "derivatives",
     ]
 
     context: dict[str, Any] = {
@@ -1286,6 +1519,15 @@ def build_market_context(
     fear_greed_change = 0.0
     fear_greed_live = False
 
+    funding_rate = 0.0
+    funding_label = "UNAVAILABLE"
+    open_interest_value = 0.0
+    open_interest_change_5m = 0.0
+    open_interest_change_1h = 0.0
+    derivatives_live = False
+    derivatives_adjustment = 0.0
+    derivatives_provider = "UNAVAILABLE"
+
     total_adjustment = 0.0
 
     btc_snapshot = context_data.get(
@@ -1481,6 +1723,35 @@ def build_market_context(
         fear_greed_change = float(fear_greed.get("change", 0.0))
         fear_greed_live = bool(fear_greed.get("live", True))
 
+    derivatives = context_data.get("derivatives", {})
+    if derivatives:
+        funding_rate = float(derivatives.get("funding_rate", 0.0))
+        funding_label = str(derivatives.get("funding_label", "BALANCED"))
+        open_interest_value = float(derivatives.get("open_interest_value", 0.0))
+        open_interest_change_5m = float(derivatives.get("open_interest_change_5m", 0.0))
+        open_interest_change_1h = float(derivatives.get("open_interest_change_1h", 0.0))
+        derivatives_live = bool(derivatives.get("live", True))
+        derivatives_provider = str(derivatives.get("provider", "UNKNOWN"))
+
+        if funding_rate >= 0.0005:
+            derivatives_adjustment -= 3.0
+            warnings.append("Positive funding shows crowded leveraged longs.")
+        elif funding_rate <= -0.0005:
+            derivatives_adjustment += 3.0
+            warnings.append("Negative funding shows crowded leveraged shorts.")
+
+        if open_interest_change_1h >= 5.0:
+            direction_effect = 3.0 if selected_signal.score > 0 else -3.0
+            derivatives_adjustment += direction_effect
+            reasons.append("Open interest is expanding and reinforces the technical direction.")
+        elif open_interest_change_1h <= -5.0:
+            direction_effect = -2.0 if selected_signal.score > 0 else 2.0
+            derivatives_adjustment += direction_effect
+            warnings.append("Open interest is contracting; deleveraging weakens trend conviction.")
+
+        derivatives_adjustment = clamp(derivatives_adjustment, -6.0, 6.0)
+        total_adjustment += derivatives_adjustment
+
     provider_errors = context_data.get(
         "provider_errors",
         {},
@@ -1557,6 +1828,14 @@ def build_market_context(
         fear_greed_label=fear_greed_label,
         fear_greed_change=fear_greed_change,
         fear_greed_live=fear_greed_live,
+        funding_rate=funding_rate,
+        funding_label=funding_label,
+        open_interest_value=open_interest_value,
+        open_interest_change_5m=open_interest_change_5m,
+        open_interest_change_1h=open_interest_change_1h,
+        derivatives_live=derivatives_live,
+        derivatives_adjustment=derivatives_adjustment,
+        derivatives_provider=derivatives_provider,
         reasons=unique_reasons[:10],
         warnings=unique_warnings[:10],
     )

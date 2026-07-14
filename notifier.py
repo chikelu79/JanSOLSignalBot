@@ -188,6 +188,12 @@ def format_market_context(context: Any | None) -> list[str]:
         f"({getattr(context, 'vix_regime', 'UNKNOWN')})",
         f"Fear & Greed: {getattr(context, 'fear_greed_value', 50):.0f} "
         f"({getattr(context, 'fear_greed_label', 'NEUTRAL')}, {fear_suffix})",
+        f"Funding: {getattr(context, 'funding_rate', 0.0) * 100:+.4f}% "
+        f"({getattr(context, 'funding_label', 'UNAVAILABLE')}, "
+        f"{getattr(context, 'derivatives_provider', 'UNKNOWN')})",
+        f"Open interest: ${getattr(context, 'open_interest_value', 0.0):,.0f}",
+        f"OI change: {getattr(context, 'open_interest_change_5m', 0.0):+.2f}% (5m), "
+        f"{getattr(context, 'open_interest_change_1h', 0.0):+.2f}% (1h)",
         f"Macro bias: {getattr(context, 'macro_bias', 'NEUTRAL')} "
         f"({getattr(context, 'macro_score', 0):+.1f})",
         f"Context adjustment: {getattr(context, 'score_adjustment', 0):+.1f}",

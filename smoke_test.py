@@ -58,12 +58,23 @@ def main() -> None:
                 "change": 2.0,
                 "live": True,
             },
+            "derivatives": {
+                "funding_rate": 0.0006,
+                "funding_label": "CROWDED LONGS",
+                "open_interest_value": 250000000.0,
+                "open_interest_change_5m": 1.2,
+                "open_interest_change_1h": 6.5,
+                "live": True,
+                "provider": "Offline test",
+            },
             "provider_errors": {},
         },
     )
     message = build_scan_message(signal, context)
     decision = evaluate_signal_alert(signal, context)
     assert "Fear & Greed: 62" in message
+    assert "Funding: +0.0600% (CROWDED LONGS, Offline test)" in message
+    assert "OI change: +1.20% (5m), +6.50% (1h)" in message
     assert "Execution status: WATCH" in message
     assert "CONFIDENCE BREAKDOWN" in message
     assert "Risk:" in message
