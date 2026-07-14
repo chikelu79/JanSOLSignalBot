@@ -317,6 +317,46 @@ def build_confidence_breakdown(
     ]
 
 
+def build_active_setups_message() -> str:
+    active_setups = get_active_setups()
+    if not active_setups:
+        return (
+            "📋 ACTIVE MANAGED SETUPS\n\n"
+            "None. The bot is waiting for a confirmed ENTRY.\n\n"
+            "These are signal-management records, not exchange positions."
+        )
+
+    lines = ["📋 ACTIVE MANAGED SETUPS"]
+    for symbol, state in sorted(active_setups.items()):
+        plan = state.get("plan", {})
+        progress: list[str] = []
+        if state.get("tp1"):
+            progress.append("TP1 reached")
+        if state.get("tp2"):
+            progress.append("TP2 reached")
+        if state.get("breakeven"):
+            progress.append("breakeven protection prompted")
+        lines.extend(
+            [
+                "",
+                f"{symbol} — {state.get('side', 'UNKNOWN')}",
+                f"Entry: {price_text(plan.get('entry_low'))} to {price_text(plan.get('entry_high'))}",
+                f"Stop: {price_text(plan.get('stop_loss'))}",
+                f"TP1: {price_text(plan.get('tp1'))}",
+                f"TP2: {price_text(plan.get('tp2'))}",
+                f"TP3: {price_text(plan.get('tp3'))}",
+                f"Progress: {', '.join(progress) if progress else 'Entry active; no milestone recorded'}",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "Signal-management records only; verify actual positions on your exchange.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def execution_status(signal: MarketSignal) -> tuple[str, str]:
     plan = signal.trade_plan
     if plan is None:

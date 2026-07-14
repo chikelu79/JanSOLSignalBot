@@ -27,6 +27,7 @@ from bot_state import (
     set_watchlist,
 )
 from notifier import (
+    build_active_setups_message,
     build_scan_message,
     evaluate_signal_alert,
     price_text,
@@ -477,6 +478,7 @@ async def start_command(
         "/market - BTC, dominance and VIX context\n"
         "/monitor on - Enable automatic alerts\n"
         "/monitor off - Disable automatic alerts\n"
+        "/setups - Show active managed setups\n"
         "/status - Bot and monitor status"
     )
 
@@ -1038,6 +1040,16 @@ async def monitor_command(
     )
 
 
+async def setups_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    await send_long_message(
+        update,
+        build_active_setups_message(),
+    )
+
+
 async def market_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -1400,6 +1412,10 @@ async def post_init(
             "Turn automatic alerts on or off",
         ),
         BotCommand(
+            "setups",
+            "Show active managed setups",
+        ),
+        BotCommand(
             "status",
             "Show bot status",
         ),
@@ -1583,6 +1599,13 @@ def main() -> None:
         CommandHandler(
             "market",
             market_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "setups",
+            setups_command,
         )
     )
 

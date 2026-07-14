@@ -4,7 +4,12 @@ from dataclasses import asdict
 
 from bot_state import get_active_setups, remove_active_setup, set_active_setup
 from market_context import build_market_context
-from notifier import build_confidence_breakdown, build_scan_message, evaluate_signal_alert
+from notifier import (
+    build_active_setups_message,
+    build_confidence_breakdown,
+    build_scan_message,
+    evaluate_signal_alert,
+)
 from strategy import MarketSignal, TradePlan
 
 
@@ -74,8 +79,12 @@ def main() -> None:
     }
     set_active_setup(signal.symbol, persisted_setup)
     assert get_active_setups()[signal.symbol]["plan"]["tp3"] == plan.tp3
+    setups_message = build_active_setups_message()
+    assert "TESTUSDT — LONG" in setups_message
+    assert "TP3: $109.0000" in setups_message
     remove_active_setup(signal.symbol)
     assert signal.symbol not in get_active_setups()
+    assert "None" in build_active_setups_message()
     signal.trade_plan = None
     breakdown = build_confidence_breakdown(signal, context)
     assert "Risk: N/A — no active setup" in breakdown
