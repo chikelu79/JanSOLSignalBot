@@ -122,6 +122,11 @@ def main() -> None:
             score=30.0, previous_macd=-0.2, previous_macd_signal=-0.1,
             macd=0.1, macd_signal=0.0, previous_macd_histogram=-0.1,
             macd_histogram=0.1, previous_rsi=28.0, rsi=32.0,
+            previous_rsi_6=40.0, previous_rsi_12=42.0, previous_rsi_24=44.0,
+            rsi_6=48.0, rsi_12=45.0, rsi_24=44.0,
+            previous_stoch_rsi_k=12.0, previous_stoch_rsi_d=15.0,
+            stoch_rsi_k=24.0, stoch_rsi_d=18.0,
+            two_back_mfi=35.0, previous_mfi=33.0, mfi=39.0,
             ema20=74.8, vwap=75.0, support=73.5, resistance=76.0,
         ),
         "1h": SimpleNamespace(score=-35.0),
@@ -130,6 +135,9 @@ def main() -> None:
     radar = build_early_opportunity_radar(signal)
     assert "EARLY LONG WATCH — COUNTERTREND" in radar[0]
     assert "fresh bullish MACD line cross" in radar[1]
+    assert "RSI 6 crossed above RSI 12" in radar[1]
+    assert "Stochastic RSI crossed bullish from oversold" in radar[1]
+    assert "MFI money flow turned upward" in radar[1]
     signal.analyses = {}
     context = build_market_context(
         signal,
