@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 
@@ -104,6 +105,15 @@ def estimate_position(side: str, entry: float, margin: float, leverage: float, s
         stop_loss = quantity * max(0.0, stop - entry) if stop is not None else None
     liquidation_distance = abs(entry - liquidation) / entry * 100.0
     stop_margin_percent = stop_loss / margin * 100.0 if stop_loss is not None else None
+    stop_distance_percent = abs(entry - stop) / entry * 100.0 if stop is not None else None
+    leverage_denominator = (
+        1.0 + maintenance_margin_rate - stop / entry
+        if side == "LONG" and stop is not None else
+        stop / entry - 1.0 + maintenance_margin_rate
+        if stop is not None else 0.0
+    )
+    maximum_leverage_before_stop = min(125.0, 1.0 / leverage_denominator) if leverage_denominator > 0 else 125.0
+    recommended_max_leverage = max(1.0, min(125.0, math.floor(maximum_leverage_before_stop * 0.80)))
     liquidation_before_stop = bool(
         stop is not None
         and ((side == "LONG" and stop <= liquidation) or (side == "SHORT" and stop >= liquidation))
@@ -113,6 +123,9 @@ def estimate_position(side: str, entry: float, margin: float, leverage: float, s
         "notional": notional, "quantity": quantity, "liquidation": liquidation,
         "liquidation_distance": liquidation_distance, "stop": stop,
         "stop_loss": stop_loss, "stop_margin_percent": stop_margin_percent,
+        "stop_distance_percent": stop_distance_percent,
+        "maximum_leverage_before_stop": maximum_leverage_before_stop,
+        "recommended_max_leverage": recommended_max_leverage,
         "maintenance_margin_rate": maintenance_margin_rate,
         "liquidation_before_stop": liquidation_before_stop,
     }

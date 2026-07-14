@@ -55,8 +55,10 @@ def main() -> None:
     assert position["notional"] == 2500.0
     assert round(float(position["liquidation"]), 3) == 60.375
     assert round(float(position["stop_loss"]), 2) == 100.0
+    assert float(position["recommended_max_leverage"]) >= 1.0
     dangerous = estimate_position("LONG", 75.0, 500.0, 20.0, 70.0)
     assert dangerous["liquidation_before_stop"] is True
+    assert float(dangerous["recommended_max_leverage"]) < 20.0
     mixed_analyses = {
         interval: SimpleNamespace(score=score, reasons=[f"reason {number}" for number in range(3)])
         for interval, score in {"5m": 20, "15m": 15, "1h": -25, "4h": -30, "8h": -35, "1d": -40}.items()

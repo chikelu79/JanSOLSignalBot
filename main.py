@@ -727,6 +727,14 @@ def build_trade_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🎛 Profile", callback_data="trade:profile"),
             InlineKeyboardButton("🧮 Risk form", callback_data="trade:risk"),
         ],
+        [
+            InlineKeyboardButton("🧮 Size long", callback_data="trade:riskplan:LONG"),
+            InlineKeyboardButton("🧮 Size short", callback_data="trade:riskplan:SHORT"),
+        ],
+        [
+            InlineKeyboardButton("📊 Active trade", callback_data="trade:setups"),
+            InlineKeyboardButton("📈 Results", callback_data="trade:stats"),
+        ],
         [InlineKeyboardButton(auto_label, callback_data="trade:autoplan")],
     ])
 
@@ -803,6 +811,30 @@ async def trade_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.message.reply_text(build_profile_text(), reply_markup=build_profile_keyboard())
     elif action == "risk":
         await riskcalc_command(update, context)
+    elif action == "setups":
+        await query.message.reply_text(build_active_setups_message())
+    elif action == "stats":
+        await query.message.reply_text(build_success_stats_message())
+    elif action.startswith("riskplan:"):
+        side = action.split(":", 1)[1]
+        symbol = get_selected_pair()
+        signal, _, _ = await analyze_symbol(symbol, include_context=False)
+        plan = create_structural_trade_plans(signal).get(side)
+        if not plan or update.effective_user is None:
+            await query.message.reply_text(f"⚠️ No {side.lower()} structural plan is available.")
+            return
+        entry = (float(plan["zone_low"]) + float(plan["zone_high"])) / 2.0
+        stop = float(plan["stop"])
+        riskcalc_sessions[update.effective_user.id] = {
+            "side": side, "entry": entry, "stop": stop,
+            "preset_stop": True, "step": "margin",
+        }
+        await query.message.reply_text(
+            f"🧮 {symbol} {side} PLAN LOADED\n\n"
+            f"Entry midpoint: {price_text(entry)}\nStructural stop: {price_text(stop)}\n\n"
+            "Enter the margin you may use in USDT:",
+            reply_markup=ForceReply(selective=True, input_field_placeholder="500"),
+        )
     elif action == "disarm":
         symbol = get_selected_pair()
         remove_armed_trade_plans(symbol)
@@ -1361,13 +1393,20 @@ async def riskcalc_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 def build_riskcalc_result(result: dict[str, Any]) -> str:
     stop_lines = ""
     if result["stop"] is not None:
+        margin_risk = float(result["stop_margin_percent"])
+        risk_label = "🟢 CONTROLLED" if margin_risk <= 10.0 else "🟡 ELEVATED" if margin_risk <= 25.0 else "🔴 HIGH"
         stop_lines = (
             f"\nPlanned stop: {price_text(result['stop'])}"
             f"\nEstimated stop loss: ${float(result['stop_loss']):,.2f}"
             f"\nMargin at risk: {float(result['stop_margin_percent']):.1f}%"
+            f"\nStop distance: {float(result['stop_distance_percent']):.2f}%"
+            f"\nRecommended maximum leverage: {float(result['recommended_max_leverage']):g}×"
+            f"\nRisk level: {risk_label}"
         )
         if result.get("liquidation_before_stop"):
             stop_lines += "\n\n🔴 DANGER: Estimated liquidation is reached before the planned stop. Reduce leverage or move the stop."
+        elif float(result["leverage"]) > float(result["recommended_max_leverage"]):
+            stop_lines += "\n\n🟡 CAUTION: Leverage exceeds the buffered recommendation. The stop is technically before liquidation, but fees, slippage and exchange tiers reduce safety."
     return (
         "🧮 POSITION & LIQUIDATION ESTIMATE\n\n"
         f"Side: {result['side']}\nEntry: {price_text(result['entry'])}\n"
@@ -1411,6 +1450,15 @@ async def riskcalc_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await query.edit_message_text("Step 4 of 5 — Type custom leverage from 1 to 125.\nExample: 7")
             return
         session["leverage"] = float(parts[2])
+        if session.get("preset_stop"):
+            try:
+                result = estimate_position(session["side"], session["entry"], session["margin"], session["leverage"], session["stop"])
+            except (KeyError, ValueError) as error:
+                await query.edit_message_text(f"⚠️ Calculator state expired: {error}. Open /trade and choose Size again.")
+            else:
+                await query.edit_message_text(build_riskcalc_result(result))
+            riskcalc_sessions.pop(user_id, None)
+            return
         session["step"] = "stop"
         await query.edit_message_text(
             "Step 5 of 5 — Enter your stop price, or tap Skip.\n\nThe stop lets the bot calculate your planned loss.",
@@ -1465,7 +1513,17 @@ async def riskcalc_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE
         if value > 125:
             await update.effective_message.reply_text("⚠️ Leverage must be between 1× and 125×.")
             return
-        session.update(leverage=value, step="stop")
+        session["leverage"] = value
+        if session.get("preset_stop"):
+            try:
+                result = estimate_position(session["side"], session["entry"], session["margin"], value, session["stop"])
+            except (KeyError, ValueError) as error:
+                await update.effective_message.reply_text(f"⚠️ Could not calculate: {error}. Open /trade and choose Size again.")
+            else:
+                await update.effective_message.reply_text(build_riskcalc_result(result))
+            riskcalc_sessions.pop(user_id, None)
+            return
+        session["step"] = "stop"
         await update.effective_message.reply_text(
             "Step 5 of 5 — Type the stop price, or tap Skip:",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Skip stop", callback_data="risk:stop:SKIP")], [InlineKeyboardButton("✖ Cancel", callback_data="risk:cancel")]]),
