@@ -960,12 +960,16 @@ async def fetch_derivatives_context(symbol: str) -> dict[str, Any]:
         cached.get("data") is not None
         and time.time() - float(cached.get("timestamp", 0.0)) < DERIVATIVES_CACHE_SECONDS
     ):
-        return dict(cached["data"])
+        result = dict(cached["data"])
+        result["fetched_at"] = float(cached.get("timestamp", 0.0))
+        return result
 
     result = await _fetch_derivatives_context_uncached(normalized)
+    fetched_at = time.time()
+    result["fetched_at"] = fetched_at
     DERIVATIVES_CACHE[normalized] = {
         "data": dict(result),
-        "timestamp": time.time(),
+        "timestamp": fetched_at,
     }
     return result
 

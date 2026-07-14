@@ -1,6 +1,7 @@
 """Offline structural smoke test. It does not contact Binance or Telegram."""
 
 import os
+import time
 os.environ["JANBOT_DISABLE_PERSISTENT_ALERTS"] = "1"
 
 from dataclasses import asdict
@@ -281,7 +282,7 @@ def main() -> None:
     signal.price = armed_long["zone_high"] * 1.003
     approach_alert = evaluate_armed_trade_plan_alert(
         signal,
-        {"taker_flow_imbalance": 25.0, "large_flow_imbalance": 40.0},
+        {"taker_flow_imbalance": 25.0, "large_flow_imbalance": 40.0, "live": True, "provider": "Offline test", "fetched_at": time.time()},
     )
     assert approach_alert.alert_type == "ARMED_PLAN_APPROACHING"
     assert "Advance warning only" in approach_alert.message
@@ -291,15 +292,23 @@ def main() -> None:
     original_economic_risk = notifier_module.get_economic_risk
     notifier_module.get_economic_risk = lambda: SimpleNamespace(block_new_entries=False)
     signal.price = (armed_long["zone_low"] + armed_long["zone_high"]) / 2.0
+    stale_alert = evaluate_armed_trade_plan_alert(
+        signal,
+        {"taker_flow_imbalance": 25.0, "large_flow_imbalance": 40.0, "live": True, "provider": "Stale test", "fetched_at": time.time() - 181.0},
+    )
+    assert stale_alert.alert_type == "ARMED_PLAN_ZONE"
+    assert "STALE / UNAVAILABLE" in stale_alert.message
     armed_alert = evaluate_armed_trade_plan_alert(
         signal,
-        {"taker_flow_imbalance": 25.0, "large_flow_imbalance": 40.0},
+        {"taker_flow_imbalance": 25.0, "large_flow_imbalance": 40.0, "live": True, "provider": "Offline test", "fetched_at": time.time()},
     )
     notifier_module.get_economic_risk = original_economic_risk
     assert armed_alert.alert_type == "ARMED_PLAN_READY"
     assert "Setup quality:" in armed_alert.message
     assert "Conservative leverage ceiling:" in armed_alert.message
     assert "WHY THIS QUALIFIED" in armed_alert.message
+    assert "Data quality: 🟢 LIVE" in armed_alert.message
+    assert "7/7 checks passed" in armed_alert.message
     learning_stats = build_success_stats_message()
     assert "BY DIRECTION" in learning_stats
     assert "BY SETUP TYPE" in learning_stats

@@ -670,6 +670,18 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
     profile = get_profile(get_trading_horizon(), get_risk_style())
     taker = float(context.get("taker_flow_imbalance", 0.0) if isinstance(context, dict) else getattr(context, "taker_flow_imbalance", 0.0)) if context is not None else 0.0
     large = float(context.get("large_flow_imbalance", 0.0) if isinstance(context, dict) else getattr(context, "large_flow_imbalance", 0.0)) if context is not None else 0.0
+    provider = str(context.get("provider", "UNAVAILABLE")) if isinstance(context, dict) else str(getattr(context, "derivatives_provider", "UNAVAILABLE")) if context is not None else "UNAVAILABLE"
+    data_live = bool(context.get("live", False)) if isinstance(context, dict) else bool(getattr(context, "derivatives_live", False)) if context is not None else False
+    fetched_at = float(context.get("fetched_at", 0.0)) if isinstance(context, dict) else now
+    data_age = max(0.0, now - fetched_at) if fetched_at > 0 else float("inf")
+    data_fresh = data_live and data_age <= 180.0
+    data_label = (
+        f"🟢 LIVE — {provider} ({data_age:.0f}s old)"
+        if data_fresh and "fallback" not in provider.lower()
+        else f"🔵 LIVE FALLBACK — {provider} ({data_age:.0f}s old)"
+        if data_fresh
+        else f"🔴 STALE / UNAVAILABLE — {provider}"
+    )
     for side in ("LONG", "SHORT"):
         plan = plans.get(side)
         if not plan:
@@ -733,8 +745,8 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
         breakout_flag = bool(getattr(analysis, "breakout_down" if side == "LONG" else "breakout_up", False))
         breakout_pressure = opposite_flow and (opposite_momentum or breakout_flag)
         event_block = get_economic_risk().block_new_entries
-        ready = inside and volume_ok and flow_ok and momentum_ok and candle_ok and not event_block
-        passed_checks = sum((inside, volume_ok, flow_ok, momentum_ok, candle_ok, not event_block))
+        ready = inside and volume_ok and flow_ok and momentum_ok and candle_ok and data_fresh and not event_block
+        passed_checks = sum((inside, volume_ok, flow_ok, momentum_ok, candle_ok, data_fresh, not event_block))
         if ready and not bool(plan.get("ready_alerted", False)):
             plan["ready_alerted"] = True
             plan["signal_id"] = record_entry_signal("ARMED", signal.symbol, side, plan, str(plan["interval"]))
@@ -792,9 +804,10 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
                 f"TP2: {price_text(plan['tp2'])} (2.00R)",
                 f"TP3: {price_text(plan['tp3'])} (3.00R)",
                 f"Conservative leverage ceiling: {recommended_leverage:.0f}× for this profile and stop distance",
+                f"Data quality: {data_label}",
                 f"Volume: {analysis.relative_volume:.2f}× | Taker: {taker:+.1f}% | Large: {large:+.1f}%",
                 "Reversal candle: 🟢 CONFIRMED",
-                f"Entry checklist: 🟢 {passed_checks}/6 checks passed",
+                f"Entry checklist: 🟢 {passed_checks}/7 checks passed",
                 "", "WHY THIS QUALIFIED", *[f"• {reason}" for reason in reasons],
                 "", "Confirm the actual execution price and use the visual risk form before choosing margin. The leverage ceiling is an estimate, not a recommendation to maximize leverage.",
             ]), f"Armed {side.lower()} plan reached confirmation")
@@ -819,8 +832,9 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
                 f"Price: {price_text(signal.price)}", f"Zone: {price_text(zone_low)} to {price_text(zone_high)}",
                 f"Volume: {analysis.relative_volume:.2f}× ({'passed' if volume_ok else 'missing'})",
                 f"Taker: {taker:+.1f}% | Large: {large:+.1f}%", f"Invalidation: {price_text(plan['stop'])}",
+                f"Data quality: {data_label}",
                 f"Reversal candle: {'🟢 CONFIRMED' if candle_ok else '🟡 WAITING'}",
-                f"Entry checklist: {'🟢' if passed_checks == 6 else '🟡'} {passed_checks}/6 checks passed",
+                f"Entry checklist: {'🟢' if passed_checks == 7 else '🟡'} {passed_checks}/7 checks passed",
                 "", f"Action: {zone_action}",
             ]), f"Armed {side.lower()} plan entered zone")
         distance = 0.0 if inside else min(abs(signal.price - zone_low), abs(signal.price - zone_high)) / max(signal.price, 1e-9) * 100.0
@@ -839,6 +853,8 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
                 missing.append("reversal candle")
             if event_block:
                 missing.append("event safety clearance")
+            if not data_fresh:
+                missing.append("fresh derivatives/order-flow data")
             return AlertDecision(True, "ARMED_PLAN_APPROACHING", signal.symbol, "\n".join([
                 f"👀 {signal.symbol} {side} PLAN APPROACHING", "",
                 f"Current price: {price_text(signal.price)}",
@@ -847,6 +863,7 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
                 f"Directional evidence: {'momentum' if momentum_ok else 'reversal'} + order flow",
                 f"Volume: {analysis.relative_volume:.2f}× ({'passed' if volume_ok else 'missing'})",
                 f"Taker: {taker:+.1f}% | Large: {large:+.1f}%",
+                f"Data quality: {data_label}",
                 f"Still required: {', '.join(missing) if missing else 'price entering the zone'}",
                 f"Event mode: {'monitoring continues; standard entry is paused' if event_block else 'clear'}",
                 "", "Advance warning only. Let price reach the zone and wait for the confirmation-ready alert.",
