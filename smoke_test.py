@@ -20,7 +20,7 @@ from notifier import (
     evaluate_signal_alert,
     setup_states,
 )
-from strategy import MarketSignal, TradePlan, create_trade_plan
+from strategy import MarketSignal, TradePlan, collect_supporting_reasons, create_trade_plan
 from session_context import get_session_context, get_special_market_event
 from trading_profile import estimate_position, get_profile
 
@@ -36,6 +36,12 @@ def main() -> None:
     assert position["notional"] == 2500.0
     assert round(float(position["liquidation"]), 3) == 60.375
     assert round(float(position["stop_loss"]), 2) == 100.0
+    mixed_analyses = {
+        interval: SimpleNamespace(score=score, reasons=[f"reason {number}" for number in range(3)])
+        for interval, score in {"5m": 20, "15m": 15, "1h": -25, "4h": -30, "8h": -35, "1d": -40}.items()
+    }
+    mixed_reasons = collect_supporting_reasons(mixed_analyses, 0.0)
+    assert len({reason.split(":", 1)[0] for reason in mixed_reasons}) >= 4
     eastern = ZoneInfo("America/New_York")
     upcoming = get_economic_risk(datetime(2026, 7, 13, 20, 0, tzinfo=eastern))
     blocked = get_economic_risk(datetime(2026, 7, 14, 8, 0, tzinfo=eastern))

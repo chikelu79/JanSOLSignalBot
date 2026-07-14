@@ -1236,6 +1236,8 @@ def collect_supporting_reasons(
         if not supports_direction:
             continue
 
+        interval_added = 0
+        interval_limit = 2 if mixed_wait else 8
         for reason in analysis.reasons:
             formatted_reason = (
                 f"{interval}: {reason}"
@@ -1245,9 +1247,12 @@ def collect_supporting_reasons(
                 collected.append(
                     formatted_reason
                 )
+                interval_added += 1
 
             if len(collected) >= 8:
                 return collected
+            if interval_added >= interval_limit:
+                break
 
     return collected
 
