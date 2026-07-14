@@ -127,6 +127,7 @@ def main() -> None:
             previous_stoch_rsi_k=12.0, previous_stoch_rsi_d=15.0,
             stoch_rsi_k=24.0, stoch_rsi_d=18.0,
             two_back_mfi=35.0, previous_mfi=33.0, mfi=39.0,
+            relative_volume=1.3,
             ema20=74.8, vwap=75.0, support=73.5, resistance=76.0,
         ),
         "1h": SimpleNamespace(score=-35.0),

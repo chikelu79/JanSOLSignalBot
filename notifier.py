@@ -182,13 +182,14 @@ def format_trade_plan(plan: TradePlan | None) -> list[str]:
     ]
 
 
-def build_early_opportunity_radar(signal: MarketSignal) -> list[str]:
+def build_early_opportunity_radar(signal: MarketSignal, context: Any | None = None) -> list[str]:
     """Show fresh lower-timeframe turns without promoting them to confirmed entries."""
     higher = [signal.analyses.get(interval) for interval in ("1h", "4h", "8h", "1d")]
     higher_scores = [analysis.score for analysis in higher if analysis is not None]
     higher_score = sum(higher_scores) / len(higher_scores) if higher_scores else 0.0
     higher_label = "BULLISH" if higher_score >= 20 else "BEARISH" if higher_score <= -20 else "MIXED"
     opportunities: list[str] = []
+    profile = get_profile(get_trading_horizon(), get_risk_style())
     for interval in ("5m", "15m"):
         analysis = signal.analyses.get(interval)
         if analysis is None:
@@ -252,11 +253,28 @@ def build_early_opportunity_radar(signal: MarketSignal) -> list[str]:
         zone_high = max(analysis.ema20, analysis.vwap)
         invalidation = analysis.support if side == "LONG" else analysis.resistance
         icon = "🟢" if side == "LONG" else "🔴"
+        volume_ok = analysis.relative_volume >= profile.volume_confirmation
+        taker_flow = float(getattr(context, "taker_flow_imbalance", 0.0))
+        large_flow = float(getattr(context, "large_flow_imbalance", 0.0))
+        supportive_flow = (side == "LONG" and (taker_flow >= 15 or large_flow >= 30)) or (side == "SHORT" and (taker_flow <= -15 or large_flow <= -30))
+        opposing_flow = (side == "LONG" and (taker_flow <= -15 or large_flow <= -30)) or (side == "SHORT" and (taker_flow >= 15 or large_flow >= 30))
+        flow_status = "🟢 SUPPORTIVE" if supportive_flow else "🔴 OPPOSING" if opposing_flow else "🟡 BALANCED"
+        if side == "LONG" and signal.price > zone_high:
+            action = "Wait for a pullback into the decision zone; do not chase above it."
+        elif side == "SHORT" and signal.price < zone_low:
+            action = "Wait for a bounce into the decision zone; do not chase below it."
+        elif zone_low <= signal.price <= zone_high:
+            action = "Price is in the decision zone; require candle and flow confirmation before treating it as an entry."
+        else:
+            action = "Wait for price to reclaim the decision zone before reassessing."
         opportunities.extend([
             f"{icon} {interval} EARLY {side} WATCH — {relationship}",
             f"Trigger: {', '.join(triggers)}",
             f"Decision zone: {price_text(zone_low)} to {price_text(zone_high)}; structural invalidation: {price_text(invalidation)}",
             f"Higher-timeframe trend: {higher_label} ({higher_score:+.0f}) — this is not a confirmed entry.",
+            f"Volume confirmation: {'🟢 PASSED' if volume_ok else '🟡 MISSING'} ({analysis.relative_volume:.2f}×; required ≥ {profile.volume_confirmation:.2f}×)",
+            f"Order-flow confirmation: {flow_status} (taker {taker_flow:+.1f}%; large trades {large_flow:+.1f}%)",
+            f"Action: {action}",
             "",
         ])
     if not opportunities:
@@ -264,6 +282,17 @@ def build_early_opportunity_radar(signal: MarketSignal) -> list[str]:
     if opportunities[-1] == "":
         opportunities.pop()
     return opportunities
+
+
+def evidence_icon(reason: str) -> str:
+    text = reason.lower()
+    bearish = ("crossed below", "bearish", "turned downward", "selling pressure", "flipped negative", "below its", "below ema")
+    bullish = ("crossed above", "bullish", "turned upward", "buying pressure", "flipped positive", "above", "improving", "rising")
+    if any(term in text for term in bearish):
+        return "🔴"
+    if any(term in text for term in bullish):
+        return "🟢"
+    return "🔵"
 
 
 def format_market_context(context: Any | None) -> list[str]:
@@ -595,7 +624,7 @@ def build_scan_message(signal: MarketSignal, context: Any | None = None) -> str:
         *format_timeframes(signal),
         "",
         "EARLY OPPORTUNITY RADAR",
-        *build_early_opportunity_radar(signal),
+        *build_early_opportunity_radar(signal, context),
         "",
         "CONFIDENCE BREAKDOWN",
         *build_confidence_breakdown(signal, context),
@@ -607,7 +636,7 @@ def build_scan_message(signal: MarketSignal, context: Any | None = None) -> str:
         lines.extend(["", "TRADE MAP", *format_trade_plan(signal.trade_plan)])
     clean_reasons = unique_items(reasons, 8)
     if clean_reasons:
-        lines.extend(["", "WHY", *[f"• {item}" for item in clean_reasons]])
+        lines.extend(["", "BULLISH / BEARISH EVIDENCE", *[f"• {evidence_icon(item)} {item}" for item in clean_reasons]])
     clean_warnings = unique_items(warnings, 6)
     if clean_warnings:
         lines.extend(["", "RISKS", *[f"• {item}" for item in clean_warnings]])
