@@ -6,8 +6,8 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from bot_state import (
-    get_active_setups, get_early_opportunities, get_risk_style, get_trading_horizon,
-    remove_active_setup, remove_early_opportunity, set_active_setup, set_early_opportunity,
+    get_active_setups, get_early_opportunities, get_early_opportunity_outcomes, get_risk_style, get_trading_horizon,
+    record_early_opportunity_outcome, remove_active_setup, remove_early_opportunity, set_active_setup, set_early_opportunity,
 )
 from economic_calendar import format_event_time, get_economic_risk
 from lunar_context import get_lunar_context
@@ -326,6 +326,7 @@ def evaluate_early_opportunity_alert(
             "invalidation": analysis.support if side == "LONG" else analysis.resistance,
             "created_at": now, "expires_at": now + expiry_seconds,
             "relationship": relationship, "triggers": triggers,
+            "zone_reached": False,
         })
         fresh_blocks[opportunity_key] = block
 
@@ -343,11 +344,18 @@ def evaluate_early_opportunity_alert(
             continue
         invalidated = (side == "LONG" and signal.price <= float(opportunity["invalidation"])) or (side == "SHORT" and signal.price >= float(opportunity["invalidation"]))
         if now >= float(opportunity["expires_at"]) or invalidated:
+            record_early_opportunity_outcome(
+                opportunity, "INVALIDATED" if invalidated else "EXPIRED", signal.price, now
+            )
             remove_early_opportunity(opportunity_key)
             continue
         zone_low = float(opportunity["zone_low"])
         zone_high = float(opportunity["zone_high"])
         inside = zone_low <= signal.price <= zone_high
+        if inside and not bool(opportunity.get("zone_reached", False)):
+            opportunity["zone_reached"] = True
+            set_early_opportunity(opportunity_key, opportunity)
+            record_early_opportunity_outcome(opportunity, "ZONE_REACHED", signal.price, now)
         distance = 0.0 if inside else min(abs(signal.price - zone_low), abs(signal.price - zone_high)) / max(signal.price, 1e-9) * 100.0
         taker_support = (side == "LONG" and taker_flow >= 15.0) or (side == "SHORT" and taker_flow <= -15.0)
         large_support = (side == "LONG" and large_flow >= 30.0) or (side == "SHORT" and large_flow <= -30.0)
@@ -385,6 +393,7 @@ def evaluate_early_opportunity_alert(
                 "tactical": True, "origin_interval": interval,
             }
             _persist_setup(signal.symbol, setup_states[signal.symbol])
+            record_early_opportunity_outcome(opportunity, "CONFIRMED", signal.price, now)
             remove_early_opportunity(opportunity_key)
             message = "\n".join([
                 f"🚨 {signal.symbol} TACTICAL {side} ENTRY READY",
@@ -431,6 +440,32 @@ def evaluate_early_opportunity_alert(
         "This is an early watch, not a confirmed entry. Wait for the displayed price, candle, volume and flow conditions.",
     ])
     return AlertDecision(True, "EARLY_OPPORTUNITY", signal.symbol, message, f"Stored {interval} {side.lower()} opportunity near decision zone")
+
+
+def build_radar_stats_message() -> str:
+    active = list(get_early_opportunities().values())
+    outcomes = get_early_opportunity_outcomes()
+    counts = {status: sum(item.get("status") == status for item in outcomes) for status in ("ZONE_REACHED", "CONFIRMED", "INVALIDATED", "EXPIRED")}
+    lines = [
+        "📈 OPPORTUNITY RADAR TRACKING",
+        "",
+        f"Active watches: {len(active)}",
+        f"Decision zones reached: {counts['ZONE_REACHED']}",
+        f"Confirmed tactical entries: {counts['CONFIRMED']}",
+        f"Invalidated: {counts['INVALIDATED']}",
+        f"Expired without confirmation: {counts['EXPIRED']}",
+        "",
+        f"Recorded lifecycle events: {len(outcomes)} (latest 200 retained)",
+    ]
+    if active:
+        lines.extend(["", "ACTIVE WATCHES"])
+        for item in active[:10]:
+            lines.append(
+                f"• {item['symbol']} {item['interval']} {item['side']} — "
+                f"{price_text(item['zone_low'])} to {price_text(item['zone_high'])}"
+            )
+    lines.extend(["", "These are radar lifecycle statistics, not profit results or exchange trades."])
+    return "\n".join(lines)
 
 
 def evidence_icon(reason: str) -> str:

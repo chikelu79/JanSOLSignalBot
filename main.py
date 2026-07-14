@@ -42,6 +42,7 @@ from trading_profile import estimate_position, get_profile
 riskcalc_sessions: dict[int, dict[str, Any]] = {}
 from notifier import (
     build_active_setups_message,
+    build_radar_stats_message,
     build_scan_message,
     evaluate_signal_alert,
     evaluate_derivatives_alert,
@@ -506,6 +507,7 @@ async def start_command(
         "/monitor on - Enable automatic alerts\n"
         "/monitor off - Disable automatic alerts\n"
         "/setups - Show active managed setups\n"
+        "/radarstats - Show opportunity-watch outcomes\n"
         "/status - Bot and monitor status"
     )
 
@@ -1095,6 +1097,16 @@ async def setups_command(
     await send_long_message(
         update,
         build_active_setups_message(),
+    )
+
+
+async def radarstats_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    await send_long_message(
+        update,
+        build_radar_stats_message(),
     )
 
 
@@ -1772,6 +1784,10 @@ async def post_init(
             "Show active managed setups",
         ),
         BotCommand(
+            "radarstats",
+            "Show opportunity-watch outcomes",
+        ),
+        BotCommand(
             "status",
             "Show bot status",
         ),
@@ -1976,6 +1992,13 @@ def main() -> None:
         CommandHandler(
             "setups",
             setups_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "radarstats",
+            radarstats_command,
         )
     )
 

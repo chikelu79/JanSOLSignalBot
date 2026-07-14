@@ -28,6 +28,7 @@ DEFAULT_STATE: dict[str, Any] = {
     ],
     "active_setups": {},
     "early_opportunities": {},
+    "early_opportunity_outcomes": [],
     "trading_horizon": "DAY",
     "risk_style": "BALANCED",
 }
@@ -216,10 +217,34 @@ def validate_state(
                     "expires_at": float(item["expires_at"]),
                     "relationship": str(item.get("relationship", "MIXED-TREND")),
                     "triggers": [str(value) for value in item.get("triggers", [])][:8],
+                    "zone_reached": bool(item.get("zone_reached", False)),
                 }
             except (KeyError, TypeError, ValueError):
                 continue
     validated["early_opportunities"] = validated_opportunities
+
+    outcomes = state.get("early_opportunity_outcomes", [])
+    validated_outcomes: list[dict[str, Any]] = []
+    if isinstance(outcomes, list):
+        for item in outcomes[-200:]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                status = str(item["status"]).upper()
+                if status not in {"ZONE_REACHED", "CONFIRMED", "INVALIDATED", "EXPIRED"}:
+                    continue
+                validated_outcomes.append({
+                    "symbol": normalize_symbol(str(item["symbol"])),
+                    "interval": str(item["interval"]),
+                    "side": str(item["side"]).upper(),
+                    "relationship": str(item.get("relationship", "MIXED-TREND")),
+                    "status": status,
+                    "price": float(item["price"]),
+                    "timestamp": float(item["timestamp"]),
+                })
+            except (KeyError, TypeError, ValueError):
+                continue
+    validated["early_opportunity_outcomes"] = validated_outcomes
 
     return validated
 
@@ -474,6 +499,7 @@ def get_state_snapshot() -> dict[str, Any]:
         "watchlist": get_watchlist(),
         "active_setups": get_active_setups(),
         "early_opportunities": get_early_opportunities(),
+        "early_opportunity_outcomes": get_early_opportunity_outcomes(),
         "trading_horizon": get_trading_horizon(),
         "risk_style": get_risk_style(),
     }
@@ -538,4 +564,23 @@ def remove_early_opportunity(key: str) -> None:
     opportunities = dict(STATE.get("early_opportunities", {}))
     opportunities.pop(str(key), None)
     STATE["early_opportunities"] = opportunities
+    save_state(STATE)
+
+
+def get_early_opportunity_outcomes() -> list[dict[str, Any]]:
+    return json.loads(json.dumps(STATE.get("early_opportunity_outcomes", [])))
+
+
+def record_early_opportunity_outcome(opportunity: dict[str, Any], status: str, price: float, timestamp: float) -> None:
+    outcomes = list(STATE.get("early_opportunity_outcomes", []))
+    outcomes.append({
+        "symbol": normalize_symbol(str(opportunity["symbol"])),
+        "interval": str(opportunity["interval"]),
+        "side": str(opportunity["side"]).upper(),
+        "relationship": str(opportunity.get("relationship", "MIXED-TREND")),
+        "status": status.upper(),
+        "price": float(price),
+        "timestamp": float(timestamp),
+    })
+    STATE["early_opportunity_outcomes"] = outcomes[-200:]
     save_state(STATE)

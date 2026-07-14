@@ -15,6 +15,7 @@ from notifier import (
     build_balanced_evidence,
     build_confidence_breakdown,
     build_early_opportunity_radar,
+    build_radar_stats_message,
     build_scan_message,
     evaluate_derivatives_alert,
     evaluate_early_opportunity_alert,
@@ -149,6 +150,10 @@ def main() -> None:
     assert early_alert.should_send
     assert early_alert.alert_type == "EARLY_OPPORTUNITY"
     assert "Distance to decision zone" in early_alert.message
+    radar_stats = build_radar_stats_message()
+    assert "OPPORTUNITY RADAR TRACKING" in radar_stats
+    assert "Active watches:" in radar_stats
+    assert "Confirmed tactical entries:" in radar_stats
     stored_key = "TESTUSDT:5m:LONG"
     assert stored_key in get_early_opportunities()
     remove_early_opportunity(stored_key)
