@@ -103,6 +103,9 @@ class MarketContext:
     derivatives_live: bool
     derivatives_adjustment: float
     derivatives_provider: str
+    long_liquidations_1h: float
+    short_liquidations_1h: float
+    liquidation_pressure: str
 
     reasons: list[str]
     warnings: list[str]
@@ -671,7 +674,7 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
                     raise RuntimeError(f"OKX returned an error: {str(payload)[:250]}")
                 return payload
 
-        funding_payload, oi_payload, history_payload = await asyncio.gather(
+        funding_payload, oi_payload, history_payload, liquidation_payload = await asyncio.gather(
             get_payload("/api/v5/public/funding-rate", {"instId": instrument}),
             get_payload(
                 "/api/v5/public/open-interest",
@@ -680,6 +683,10 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
             get_payload(
                 "/api/v5/rubik/stat/contracts/open-interest-history",
                 {"instId": instrument, "period": "5m"},
+            ),
+            get_payload(
+                "/api/v5/public/liquidation-orders",
+                {"instType": "SWAP", "uly": f"{base_asset}-USDT", "state": "filled", "limit": "100"},
             ),
         )
 
@@ -716,6 +723,30 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
     else:
         funding_label = "BALANCED"
 
+    cutoff_1h = int(time.time() * 1000) - 60 * 60 * 1000
+    long_liquidations_1h = 0.0
+    short_liquidations_1h = 0.0
+    for group in liquidation_payload.get("data", []):
+        if group.get("instId") != instrument:
+            continue
+        for detail in group.get("details", []):
+            if int(detail.get("ts", detail.get("time", 0))) < cutoff_1h:
+                continue
+            notional = float(detail.get("sz", 0.0)) * float(detail.get("bkPx", 0.0))
+            if detail.get("posSide") == "long":
+                long_liquidations_1h += notional
+            elif detail.get("posSide") == "short":
+                short_liquidations_1h += notional
+    total_liquidations = long_liquidations_1h + short_liquidations_1h
+    if total_liquidations < 10000:
+        liquidation_pressure = "LOW"
+    elif long_liquidations_1h >= short_liquidations_1h * 1.5:
+        liquidation_pressure = "LONG FLUSH"
+    elif short_liquidations_1h >= long_liquidations_1h * 1.5:
+        liquidation_pressure = "SHORT SQUEEZE"
+    else:
+        liquidation_pressure = "TWO-WAY"
+
     return {
         "funding_rate": funding_rate,
         "funding_label": funding_label,
@@ -725,6 +756,9 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
         "open_interest_change_1h": change_1h,
         "live": True,
         "provider": "OKX Futures fallback",
+        "long_liquidations_1h": long_liquidations_1h,
+        "short_liquidations_1h": short_liquidations_1h,
+        "liquidation_pressure": liquidation_pressure,
     }
 
 
@@ -1547,6 +1581,9 @@ def build_market_context(
     derivatives_live = False
     derivatives_adjustment = 0.0
     derivatives_provider = "UNAVAILABLE"
+    long_liquidations_1h = 0.0
+    short_liquidations_1h = 0.0
+    liquidation_pressure = "UNAVAILABLE"
 
     total_adjustment = 0.0
 
@@ -1752,6 +1789,9 @@ def build_market_context(
         open_interest_change_1h = float(derivatives.get("open_interest_change_1h", 0.0))
         derivatives_live = bool(derivatives.get("live", True))
         derivatives_provider = str(derivatives.get("provider", "UNKNOWN"))
+        long_liquidations_1h = float(derivatives.get("long_liquidations_1h", 0.0))
+        short_liquidations_1h = float(derivatives.get("short_liquidations_1h", 0.0))
+        liquidation_pressure = str(derivatives.get("liquidation_pressure", "UNAVAILABLE"))
 
         if funding_rate >= 0.0005:
             derivatives_adjustment -= 3.0
@@ -1856,6 +1896,9 @@ def build_market_context(
         derivatives_live=derivatives_live,
         derivatives_adjustment=derivatives_adjustment,
         derivatives_provider=derivatives_provider,
+        long_liquidations_1h=long_liquidations_1h,
+        short_liquidations_1h=short_liquidations_1h,
+        liquidation_pressure=liquidation_pressure,
         reasons=unique_reasons[:10],
         warnings=unique_warnings[:10],
     )

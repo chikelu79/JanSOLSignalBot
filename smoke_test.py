@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from bot_state import get_active_setups, remove_active_setup, set_active_setup
 from economic_calendar import build_calendar_message, get_economic_risk
+from lunar_context import get_lunar_context
 from market_context import build_market_context
 from notifier import (
     build_active_setups_message,
@@ -31,6 +32,8 @@ def main() -> None:
     assert "US Employment / NFP" in build_calendar_message(datetime(2026, 7, 30, 12, 0, tzinfo=eastern))
     economic_alert = evaluate_economic_alert()
     assert economic_alert.alert_type in {"ECONOMIC_EVENT", "NONE"}
+    lunar = get_lunar_context(datetime(2026, 7, 13, 20, 0, tzinfo=eastern))
+    assert lunar.label == "NEAR NEW MOON"
     structural_analysis = SimpleNamespace(
         atr=2.0,
         support=95.0,
@@ -124,10 +127,29 @@ def main() -> None:
             "open_interest_change_1h": 6.5,
             "provider": "Offline test",
             "live": True,
+            "long_liquidations_1h": 0.0,
+            "short_liquidations_1h": 300000.0,
+            "liquidation_pressure": "SHORT SQUEEZE",
         },
     )
     assert derivatives_alert.should_send
     assert derivatives_alert.alert_type == "FUNDING_CROWDING"
+    liquidation_alert = evaluate_derivatives_alert(
+        signal,
+        {
+            "funding_rate": 0.0,
+            "funding_label": "BALANCED",
+            "open_interest_value": 250000000.0,
+            "open_interest_change_5m": 0.0,
+            "open_interest_change_1h": 0.0,
+            "long_liquidations_1h": 300000.0,
+            "short_liquidations_1h": 0.0,
+            "liquidation_pressure": "LONG FLUSH",
+            "provider": "Offline test",
+            "live": True,
+        },
+    )
+    assert liquidation_alert.alert_type == "LIQUIDATION_WAVE"
     assert "Execution status: WATCH" in message
     assert "CONFIDENCE BREAKDOWN" in message
     assert "Risk:" in message

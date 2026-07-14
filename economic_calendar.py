@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from lunar_context import get_lunar_context
 
 
 EASTERN = ZoneInfo("America/New_York")
@@ -107,6 +108,7 @@ def format_event_time(event: EconomicEvent) -> str:
 
 def build_calendar_message(now: datetime | None = None) -> str:
     risk = get_economic_risk(now)
+    lunar = get_lunar_context(now)
     lines = [
         "📅 ECONOMIC CALENDAR",
         "",
@@ -120,5 +122,12 @@ def build_calendar_message(now: datetime | None = None) -> str:
         lines.extend(f"• {format_event_time(event)} — {event.name} ({event.source})" for event in events)
     else:
         lines.append("• No remaining 2026 events in the verified schedule.")
-    lines.extend(["", "Times: America/New_York. Schedule sources: BLS and Federal Reserve."])
+    lines.extend([
+        "",
+        "LUNAR CONTEXT",
+        f"Status: {lunar.label}",
+        lunar.detail,
+        "",
+        "Times: America/New_York. Schedule sources: BLS, Federal Reserve and USNO.",
+    ])
     return "\n".join(lines)

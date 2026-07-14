@@ -7,6 +7,7 @@ from typing import Any
 
 from bot_state import get_active_setups, remove_active_setup, set_active_setup
 from economic_calendar import format_event_time, get_economic_risk
+from lunar_context import get_lunar_context
 from session_context import get_session_context
 from strategy import MarketSignal, TradePlan, get_readiness_label, get_signal_grade
 
@@ -198,6 +199,9 @@ def format_market_context(context: Any | None) -> list[str]:
         f"Open interest: ${getattr(context, 'open_interest_value', 0.0):,.0f}",
         f"OI change: {getattr(context, 'open_interest_change_5m', 0.0):+.2f}% (5m), "
         f"{getattr(context, 'open_interest_change_1h', 0.0):+.2f}% (1h)",
+        f"Liquidations 1h: longs ${getattr(context, 'long_liquidations_1h', 0.0):,.0f} / "
+        f"shorts ${getattr(context, 'short_liquidations_1h', 0.0):,.0f}",
+        f"Liquidation pressure: {getattr(context, 'liquidation_pressure', 'UNAVAILABLE')}",
         f"Macro bias: {getattr(context, 'macro_bias', 'NEUTRAL')} "
         f"({getattr(context, 'macro_score', 0):+.1f})",
         f"Context adjustment: {getattr(context, 'score_adjustment', 0):+.1f}",
@@ -401,6 +405,7 @@ def build_scan_message(signal: MarketSignal, context: Any | None = None) -> str:
     status, status_detail = execution_status(signal)
     session = get_session_context()
     economic = get_economic_risk()
+    lunar = get_lunar_context()
     reasons = list(signal.supporting_reasons)
     warnings = list(signal.warnings)
     if context is not None:
@@ -428,6 +433,7 @@ def build_scan_message(signal: MarketSignal, context: Any | None = None) -> str:
         "ECONOMIC CALENDAR",
         f"Risk: {economic.status}",
         economic.detail,
+        f"Lunar: {lunar.label} — {lunar.detail}",
         "",
         "TIMEFRAMES",
         *format_timeframes(signal),
@@ -517,6 +523,7 @@ def build_derivatives_alert_message(
         "OI_SURGE": f"⚡ {signal.symbol} OPEN INTEREST SURGE",
         "OI_DIVERGENCE": f"🔀 {signal.symbol} PRICE / OI DIVERGENCE",
         "DERIVATIVES_EXIT": f"🚪 {signal.symbol} DERIVATIVES EXIT WARNING",
+        "LIQUIDATION_WAVE": f"🌊 {signal.symbol} LIQUIDATION WAVE",
     }
     return "\n".join(
         [
@@ -529,6 +536,9 @@ def build_derivatives_alert_message(
             f"Open interest: ${float(derivatives.get('open_interest_value', 0.0)):,.0f}",
             f"OI change: {float(derivatives.get('open_interest_change_5m', 0.0)):+.2f}% (5m), "
             f"{float(derivatives.get('open_interest_change_1h', 0.0)):+.2f}% (1h)",
+            f"Liquidations 1h: longs ${float(derivatives.get('long_liquidations_1h', 0.0)):,.0f} / "
+            f"shorts ${float(derivatives.get('short_liquidations_1h', 0.0)):,.0f}",
+            f"Liquidation pressure: {derivatives.get('liquidation_pressure', 'UNAVAILABLE')}",
             f"Provider: {derivatives.get('provider', 'UNKNOWN')}",
             "",
             f"Action: {action}",
@@ -582,6 +592,9 @@ def evaluate_derivatives_alert(
     funding = float(derivatives.get("funding_rate", 0.0))
     oi_5m = float(derivatives.get("open_interest_change_5m", 0.0))
     oi_1h = float(derivatives.get("open_interest_change_1h", 0.0))
+    long_liquidations = float(derivatives.get("long_liquidations_1h", 0.0))
+    short_liquidations = float(derivatives.get("short_liquidations_1h", 0.0))
+    liquidation_total = long_liquidations + short_liquidations
     active = setup_states.get(symbol)
 
     if active:
@@ -621,6 +634,22 @@ def evaluate_derivatives_alert(
                 symbol,
                 build_derivatives_alert_message(signal, derivatives, "FUNDING_CROWDING", action),
                 "Funding reached a crowded threshold",
+            )
+
+    if liquidation_total >= 250000.0:
+        key = make_alert_key(symbol, "LIQUIDATION_WAVE")
+        if alert_allowed(key, DERIVATIVES_ALERT_COOLDOWN_SECONDS):
+            mark_alert_sent(key)
+            pressure = derivatives.get("liquidation_pressure", "TWO-WAY")
+            action = (
+                f"A live {pressure.lower()} liquidation wave is underway. Avoid entering the impulse; wait for the forced flow to settle and retest."
+            )
+            return AlertDecision(
+                True,
+                "LIQUIDATION_WAVE",
+                symbol,
+                build_derivatives_alert_message(signal, derivatives, "LIQUIDATION_WAVE", action),
+                "Live one-hour liquidations crossed the alert threshold",
             )
 
     if abs(oi_5m) >= 5.0 or abs(oi_1h) >= 10.0:
