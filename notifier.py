@@ -6,8 +6,8 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from bot_state import (
-    get_active_setups, get_early_opportunities, get_early_opportunity_outcomes, get_risk_style, get_trading_horizon,
-    record_early_opportunity_outcome, remove_active_setup, remove_early_opportunity, set_active_setup, set_early_opportunity,
+    get_active_setups, get_armed_trade_plans, get_early_opportunities, get_early_opportunity_outcomes, get_risk_style, get_trading_horizon,
+    record_early_opportunity_outcome, remove_active_setup, remove_early_opportunity, set_active_setup, set_armed_trade_plans, set_early_opportunity,
 )
 from economic_calendar import format_event_time, get_economic_risk
 from lunar_context import get_lunar_context
@@ -511,6 +511,100 @@ def build_radar_stats_message() -> str:
     return "\n".join(lines)
 
 
+def create_structural_trade_plans(signal: MarketSignal) -> dict[str, dict[str, Any]]:
+    profile = get_profile(get_trading_horizon(), get_risk_style())
+    analyses = [(interval, signal.analyses[interval]) for interval in profile.primary_timeframes if interval in signal.analyses]
+    if not analyses:
+        return {}
+    price = signal.price
+    supports = [(a.support, i, a) for i, a in analyses if 0 < a.support <= price]
+    resistances = [(a.resistance, i, a) for i, a in analyses if a.resistance >= price]
+    if not supports:
+        supports = [(price - max(float(a.atr), price * 0.005), i, a) for i, a in analyses]
+    if not resistances:
+        resistances = [(price + max(float(a.atr), price * 0.005), i, a) for i, a in analyses]
+    selected = {
+        "LONG": max(supports, key=lambda item: item[0]),
+        "SHORT": min(resistances, key=lambda item: item[0]),
+    }
+    plans: dict[str, dict[str, Any]] = {}
+    for side, (level, interval, analysis) in selected.items():
+        atr = max(float(analysis.atr), price * 0.002)
+        zone_low, zone_high = ((level, level + atr * 0.25) if side == "LONG" else (level - atr * 0.25, level))
+        stop = level - atr * 0.75 if side == "LONG" else level + atr * 0.75
+        midpoint = (zone_low + zone_high) / 2.0
+        risk = abs(midpoint - stop)
+        direction = 1.0 if side == "LONG" else -1.0
+        plans[side] = {
+            "side": side, "interval": interval, "zone_low": zone_low, "zone_high": zone_high,
+            "stop": stop, "tp1": midpoint + direction * risk * 1.25,
+            "tp2": midpoint + direction * risk * 2.0,
+            "tp3": midpoint + direction * risk * 3.0,
+        }
+    return plans
+
+
+def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = None) -> AlertDecision:
+    all_armed = get_armed_trade_plans()
+    plans = all_armed.get(signal.symbol, {})
+    if not plans:
+        return AlertDecision(False, "NONE", signal.symbol, "", "No armed trade plan")
+    now = time.time()
+    profile = get_profile(get_trading_horizon(), get_risk_style())
+    taker = float(context.get("taker_flow_imbalance", 0.0) if isinstance(context, dict) else getattr(context, "taker_flow_imbalance", 0.0)) if context is not None else 0.0
+    large = float(context.get("large_flow_imbalance", 0.0) if isinstance(context, dict) else getattr(context, "large_flow_imbalance", 0.0)) if context is not None else 0.0
+    for side in ("LONG", "SHORT"):
+        plan = plans.get(side)
+        if not plan:
+            continue
+        invalidated = signal.price <= float(plan["stop"]) if side == "LONG" else signal.price >= float(plan["stop"])
+        expired = now >= float(plan["expires_at"])
+        if invalidated or expired:
+            plans.pop(side, None)
+            set_armed_trade_plans(signal.symbol, plans)
+            reason = "INVALIDATED" if invalidated else "EXPIRED"
+            return AlertDecision(True, "ARMED_PLAN_CLOSED", signal.symbol, "\n".join([
+                f"{'🔴' if invalidated else '⌛'} {signal.symbol} {side} PLAN {reason}", "",
+                f"Current price: {price_text(signal.price)}", f"Plan stop: {price_text(plan['stop'])}",
+                "The preplanned setup has been removed. No trade is assumed.",
+            ]), f"Armed {side.lower()} plan {reason.lower()}")
+        zone_low, zone_high = float(plan["zone_low"]), float(plan["zone_high"])
+        inside = zone_low <= signal.price <= zone_high
+        analysis = signal.analyses.get(str(plan["interval"]))
+        if analysis is None:
+            continue
+        volume_ok = analysis.relative_volume >= profile.volume_confirmation
+        flow_ok = (side == "LONG" and (taker >= 15 or large >= 30)) or (side == "SHORT" and (taker <= -15 or large <= -30))
+        momentum_ok = analysis.score >= 20 if side == "LONG" else analysis.score <= -20
+        event_block = get_economic_risk().block_new_entries
+        ready = inside and volume_ok and flow_ok and momentum_ok and not event_block
+        if ready and not bool(plan.get("ready_alerted", False)):
+            plan["ready_alerted"] = True
+            plans[side] = plan
+            set_armed_trade_plans(signal.symbol, plans)
+            return AlertDecision(True, "ARMED_PLAN_READY", signal.symbol, "\n".join([
+                f"🚨 {signal.symbol} {side} PLAN CONFIRMATION READY", "",
+                f"Price: {price_text(signal.price)}", f"Entry zone: {price_text(zone_low)} to {price_text(zone_high)}",
+                f"Stop: {price_text(plan['stop'])}", f"TP1: {price_text(plan['tp1'])}",
+                f"TP2: {price_text(plan['tp2'])}", f"TP3: {price_text(plan['tp3'])}",
+                f"Volume: {analysis.relative_volume:.2f}× | Taker: {taker:+.1f}% | Large: {large:+.1f}%",
+                "", "Confirm the reversal candle and actual execution price before acting.",
+            ]), f"Armed {side.lower()} plan reached confirmation")
+        if inside and not bool(plan.get("zone_alerted", False)):
+            plan["zone_alerted"] = True
+            plans[side] = plan
+            set_armed_trade_plans(signal.symbol, plans)
+            status = "EVENT BLOCK" if event_block else "NOT YET CONFIRMED"
+            return AlertDecision(True, "ARMED_PLAN_ZONE", signal.symbol, "\n".join([
+                f"🔔 {signal.symbol} ENTERED {side} ZONE — {status}", "",
+                f"Price: {price_text(signal.price)}", f"Zone: {price_text(zone_low)} to {price_text(zone_high)}",
+                f"Volume: {analysis.relative_volume:.2f}× ({'passed' if volume_ok else 'missing'})",
+                f"Taker: {taker:+.1f}% | Large: {large:+.1f}%", f"Invalidation: {price_text(plan['stop'])}",
+                "", "Wait for the required reversal and confirmation; entering the zone alone is not an entry.",
+            ]), f"Armed {side.lower()} plan entered zone")
+    return AlertDecision(False, "NONE", signal.symbol, "", "Armed plans are waiting for price")
+
+
 def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> str:
     profile = get_profile(get_trading_horizon(), get_risk_style())
     analyses = [
@@ -544,6 +638,51 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
     taker_flow = float(getattr(context, "taker_flow_imbalance", 0.0)) if context is not None else 0.0
     large_flow = float(getattr(context, "large_flow_imbalance", 0.0)) if context is not None else 0.0
     economic = get_economic_risk()
+
+    level_intervals = list(dict.fromkeys(profile.primary_timeframes + profile.confirmation_timeframes))
+    level_analyses = [(interval, signal.analyses[interval]) for interval in level_intervals if interval in signal.analyses]
+
+    def clustered_levels(attribute: str, side: str) -> list[str]:
+        raw = sorted(
+            [(float(getattr(analysis, attribute, 0.0)), interval) for interval, analysis in level_analyses if float(getattr(analysis, attribute, 0.0)) > 0],
+            key=lambda item: item[0],
+        )
+        clusters: list[dict[str, Any]] = []
+        tolerance = price * 0.0035
+        for level, interval in raw:
+            match = next((cluster for cluster in clusters if abs(level - cluster["level"]) <= tolerance), None)
+            if match:
+                count = len(match["intervals"])
+                match["level"] = (match["level"] * count + level) / (count + 1)
+                match["intervals"].append(interval)
+            else:
+                clusters.append({"level": level, "intervals": [interval]})
+        relevant = [cluster for cluster in clusters if (cluster["level"] <= price if side == "SUPPORT" else cluster["level"] >= price)]
+        relevant.sort(key=lambda cluster: abs(cluster["level"] - price))
+        rows: list[str] = []
+        for index, cluster in enumerate(relevant[:3], start=1):
+            distance = abs(cluster["level"] - price) / max(price, 1e-9) * 100.0
+            strength = "STRONG CLUSTER" if len(cluster["intervals"]) >= 2 else "single timeframe"
+            icon = "🟢" if side == "SUPPORT" else "🔴"
+            rows.append(
+                f"{icon} {'S' if side == 'SUPPORT' else 'R'}{index}: {price_text(cluster['level'])} "
+                f"({distance:.2f}% away) — {strength}; {', '.join(cluster['intervals'])}"
+            )
+        return rows
+
+    support_rows = clustered_levels("support", "SUPPORT")
+    resistance_rows = clustered_levels("resistance", "RESISTANCE")
+    pattern_rows: list[str] = []
+    for interval, analysis in level_analyses:
+        clues = list(getattr(analysis, "candle_patterns", [])) + list(getattr(analysis, "chart_structures", [])) + list(getattr(analysis, "divergences", []))
+        for clue in clues:
+            entry = f"• {interval}: {clue}"
+            if entry not in pattern_rows:
+                pattern_rows.append(entry)
+            if len(pattern_rows) >= 4:
+                break
+        if len(pattern_rows) >= 4:
+            break
 
     def plan(side: str, level: float, interval: str, analysis: Any) -> list[str]:
         atr = max(float(analysis.atr), price * 0.002)
@@ -589,6 +728,7 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
 
     score = float(getattr(context, "adjusted_score", signal.score)) if context is not None else signal.score
     bias = "BULLISH" if score >= profile.watch_threshold else "BEARISH" if score <= -profile.watch_threshold else "MIXED / WAIT"
+    armed_sides = list(get_armed_trade_plans().get(signal.symbol, {}))
     lines = [
         f"🎯 {signal.symbol} TRADE PLANNER",
         f"Profile: {profile.horizon} / {profile.risk_style}",
@@ -596,6 +736,15 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
         f"Current price: {price_text(price)}",
         f"Decision bias: {bias} ({score:+.1f}; directional at ±{profile.watch_threshold:.0f})",
         f"Economic risk: {economic.status}",
+        f"Armed plans: {', '.join(armed_sides) if armed_sides else 'NONE'}",
+        "",
+        "KEY LEVEL MAP",
+        *(resistance_rows or ["🔴 No valid resistance above current price."]),
+        f"🔵 NOW: {price_text(price)}",
+        *(support_rows or ["🟢 No valid support below current price."]),
+        "",
+        "REVERSAL / PATTERN CLUES",
+        *(pattern_rows or ["• No active multi-timeframe reversal pattern; wait for a candle/oscillator trigger at a key level."]),
         "",
         *plan("LONG", long_level, long_interval, long_analysis),
         "",

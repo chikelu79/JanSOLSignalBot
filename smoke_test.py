@@ -5,7 +5,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-from bot_state import get_active_setups, get_early_opportunities, remove_active_setup, remove_early_opportunity, set_active_setup
+from bot_state import get_active_setups, get_early_opportunities, remove_active_setup, remove_armed_trade_plans, remove_early_opportunity, set_active_setup, set_armed_trade_plans
 from economic_calendar import build_calendar_message, get_economic_risk
 from news_intelligence import build_news_message
 from lunar_context import get_lunar_context
@@ -18,8 +18,10 @@ from notifier import (
     build_radar_stats_message,
     build_scan_message,
     build_trade_dashboard,
+    create_structural_trade_plans,
     evaluate_derivatives_alert,
     evaluate_early_opportunity_alert,
+    evaluate_armed_trade_plan_alert,
     evaluate_economic_alert,
     evaluate_session_alert,
     evaluate_signal_alert,
@@ -209,8 +211,25 @@ def main() -> None:
     )
     assert "TRADE PLANNER" in trade_dashboard
     assert "LONG PLAN" in trade_dashboard and "SHORT PLAN" in trade_dashboard
+    assert "KEY LEVEL MAP" in trade_dashboard
+    assert "S1:" in trade_dashboard and "R1:" in trade_dashboard
+    assert "REVERSAL / PATTERN CLUES" in trade_dashboard
     assert "Provisional TP1:" in trade_dashboard and "Provisional TP3:" in trade_dashboard
     assert "Use /scan for the complete evidence report." in trade_dashboard
+    generated_plans = create_structural_trade_plans(signal)
+    assert set(generated_plans) == {"LONG", "SHORT"}
+    armed_long = {
+        **generated_plans["LONG"], "created_at": 1.0, "expires_at": 9999999999.0,
+        "zone_alerted": False, "ready_alerted": False,
+    }
+    set_armed_trade_plans(signal.symbol, {"LONG": armed_long})
+    signal.price = (armed_long["zone_low"] + armed_long["zone_high"]) / 2.0
+    armed_alert = evaluate_armed_trade_plan_alert(
+        signal,
+        {"taker_flow_imbalance": 25.0, "large_flow_imbalance": 40.0},
+    )
+    assert armed_alert.alert_type in {"ARMED_PLAN_READY", "ARMED_PLAN_ZONE"}
+    remove_armed_trade_plans(signal.symbol)
     signal.price = 100.5
     signal.analyses = {}
     signal.analyses = {

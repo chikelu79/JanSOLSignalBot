@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from contextlib import suppress
 from typing import Any
 
@@ -23,6 +24,7 @@ from news_intelligence import build_news_message, fetch_news_intelligence
 from bot_state import (
     add_to_watchlist,
     get_runtime_chat_id,
+    get_armed_trade_plans,
     get_risk_style,
     get_selected_pair,
     get_state_snapshot,
@@ -30,7 +32,9 @@ from bot_state import (
     get_trading_horizon,
     is_monitor_enabled,
     remove_from_watchlist,
+    remove_armed_trade_plans,
     set_monitor_enabled,
+    set_armed_trade_plans,
     set_runtime_chat_id,
     set_trading_profile,
     set_selected_pair,
@@ -45,10 +49,12 @@ from notifier import (
     build_radar_stats_message,
     build_scan_message,
     build_trade_dashboard,
+    create_structural_trade_plans,
     evaluate_signal_alert,
     evaluate_derivatives_alert,
     evaluate_economic_alert,
     evaluate_early_opportunity_alert,
+    evaluate_armed_trade_plan_alert,
     evaluate_session_alert,
     evaluate_news_alert,
     price_text,
@@ -702,6 +708,14 @@ def build_trade_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("📋 Full scan", callback_data="trade:scan"),
         ],
         [
+            InlineKeyboardButton("🔔 Arm long", callback_data="trade:arm:LONG"),
+            InlineKeyboardButton("🔔 Arm short", callback_data="trade:arm:SHORT"),
+        ],
+        [
+            InlineKeyboardButton("🔔 Arm both", callback_data="trade:arm:BOTH"),
+            InlineKeyboardButton("✖ Disarm", callback_data="trade:disarm"),
+        ],
+        [
             InlineKeyboardButton("🎛 Profile", callback_data="trade:profile"),
             InlineKeyboardButton("🧮 Risk form", callback_data="trade:risk"),
         ],
@@ -748,6 +762,30 @@ async def trade_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.message.reply_text(build_profile_text(), reply_markup=build_profile_keyboard())
     elif action == "risk":
         await riskcalc_command(update, context)
+    elif action == "disarm":
+        symbol = get_selected_pair()
+        remove_armed_trade_plans(symbol)
+        await query.message.reply_text(f"✖ {symbol} trade plans disarmed.")
+    elif action.startswith("arm:"):
+        selection = action.split(":", 1)[1]
+        symbol = get_selected_pair()
+        signal, _, _ = await analyze_symbol(symbol, include_context=False)
+        generated = create_structural_trade_plans(signal)
+        selected_sides = ("LONG", "SHORT") if selection == "BOTH" else (selection,)
+        expiry = {"SCALPING": 2 * 60 * 60, "DAY": 24 * 60 * 60, "SWING": 7 * 24 * 60 * 60}[get_trading_horizon()]
+        now = time.time()
+        armed = get_armed_trade_plans().get(symbol, {})
+        for side in selected_sides:
+            if side in generated:
+                armed[side] = {
+                    **generated[side], "created_at": now, "expires_at": now + expiry,
+                    "zone_alerted": False, "ready_alerted": False,
+                }
+        set_armed_trade_plans(symbol, armed)
+        await query.message.reply_text(
+            f"✅ {symbol} {' and '.join(selected_sides)} plan{'s' if len(selected_sides) > 1 else ''} armed.\n"
+            "The monitor will alert when price enters a zone, confirms, invalidates or expires."
+        )
 
 
 async def calendar_command(
@@ -1594,8 +1632,11 @@ async def monitor_one_symbol(
                 macro_context,
                 derivatives_data,
             )
+            armed_decision = evaluate_armed_trade_plan_alert(signal, derivatives_data)
             alert_decisions = (
-                (decision, derivatives_decision)
+                (armed_decision, derivatives_decision)
+                if armed_decision.should_send
+                else (decision, derivatives_decision)
                 if decision.should_send
                 else (early_decision, derivatives_decision)
             )

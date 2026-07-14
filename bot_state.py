@@ -29,6 +29,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "active_setups": {},
     "early_opportunities": {},
     "early_opportunity_outcomes": [],
+    "armed_trade_plans": {},
     "trading_horizon": "DAY",
     "risk_style": "BALANCED",
 }
@@ -249,6 +250,32 @@ def validate_state(
             except (KeyError, TypeError, ValueError):
                 continue
     validated["early_opportunity_outcomes"] = validated_outcomes
+
+    armed = state.get("armed_trade_plans", {})
+    validated_armed: dict[str, Any] = {}
+    if isinstance(armed, dict):
+        for symbol, sides in armed.items():
+            if not isinstance(sides, dict):
+                continue
+            clean_sides: dict[str, Any] = {}
+            for side, item in sides.items():
+                if side not in {"LONG", "SHORT"} or not isinstance(item, dict):
+                    continue
+                try:
+                    clean_sides[side] = {
+                        "side": side, "interval": str(item["interval"]),
+                        "zone_low": float(item["zone_low"]), "zone_high": float(item["zone_high"]),
+                        "stop": float(item["stop"]), "tp1": float(item["tp1"]),
+                        "tp2": float(item["tp2"]), "tp3": float(item["tp3"]),
+                        "created_at": float(item["created_at"]), "expires_at": float(item["expires_at"]),
+                        "zone_alerted": bool(item.get("zone_alerted", False)),
+                        "ready_alerted": bool(item.get("ready_alerted", False)),
+                    }
+                except (KeyError, TypeError, ValueError):
+                    continue
+            if clean_sides:
+                validated_armed[normalize_symbol(str(symbol))] = clean_sides
+    validated["armed_trade_plans"] = validated_armed
 
     return validated
 
@@ -504,6 +531,7 @@ def get_state_snapshot() -> dict[str, Any]:
         "active_setups": get_active_setups(),
         "early_opportunities": get_early_opportunities(),
         "early_opportunity_outcomes": get_early_opportunity_outcomes(),
+        "armed_trade_plans": get_armed_trade_plans(),
         "trading_horizon": get_trading_horizon(),
         "risk_style": get_risk_style(),
     }
@@ -587,4 +615,22 @@ def record_early_opportunity_outcome(opportunity: dict[str, Any], status: str, p
         "timestamp": float(timestamp),
     })
     STATE["early_opportunity_outcomes"] = outcomes[-200:]
+    save_state(STATE)
+
+
+def get_armed_trade_plans() -> dict[str, Any]:
+    return json.loads(json.dumps(STATE.get("armed_trade_plans", {})))
+
+
+def set_armed_trade_plans(symbol: str, plans: dict[str, Any]) -> None:
+    armed = dict(STATE.get("armed_trade_plans", {}))
+    armed[normalize_symbol(symbol)] = plans
+    STATE["armed_trade_plans"] = armed
+    save_state(STATE)
+
+
+def remove_armed_trade_plans(symbol: str) -> None:
+    armed = dict(STATE.get("armed_trade_plans", {}))
+    armed.pop(normalize_symbol(symbol), None)
+    STATE["armed_trade_plans"] = armed
     save_state(STATE)
