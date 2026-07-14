@@ -604,6 +604,7 @@ def get_state_snapshot() -> dict[str, Any]:
     return {
         "selected_pair": get_selected_pair(),
         "monitor_enabled": is_monitor_enabled(),
+        "auto_plan_enabled": is_auto_plan_enabled(),
         "runtime_chat_id": get_runtime_chat_id(),
         "watchlist": get_watchlist(),
         "active_setups": get_active_setups(),

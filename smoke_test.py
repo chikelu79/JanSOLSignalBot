@@ -8,7 +8,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-from bot_state import get_active_setups, get_early_opportunities, remove_active_setup, remove_armed_trade_plans, remove_early_opportunity, set_active_setup, set_armed_trade_plans
+from bot_state import get_active_setups, get_early_opportunities, get_state_snapshot, is_auto_plan_enabled, remove_active_setup, remove_armed_trade_plans, remove_early_opportunity, set_active_setup, set_armed_trade_plans
 from economic_calendar import build_calendar_message, get_economic_risk, get_profile_economic_risk
 from news_intelligence import build_news_message
 from lunar_context import get_lunar_context
@@ -39,6 +39,7 @@ from trading_profile import estimate_position, get_profile
 
 
 def main() -> None:
+    assert get_state_snapshot()["auto_plan_enabled"] == is_auto_plan_enabled()
     success_stats = build_success_stats_message()
     assert "SIGNAL SUCCESS STATISTICS" in success_stats
     assert "Success rate:" in success_stats
