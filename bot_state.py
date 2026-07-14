@@ -282,6 +282,7 @@ def validate_state(
                         "stop": float(item["stop"]), "tp1": float(item["tp1"]),
                         "tp2": float(item["tp2"]), "tp3": float(item["tp3"]),
                         "created_at": float(item["created_at"]), "expires_at": float(item["expires_at"]),
+                        "approach_alerted": bool(item.get("approach_alerted", False)),
                         "zone_alerted": bool(item.get("zone_alerted", False)),
                         "ready_alerted": bool(item.get("ready_alerted", False)),
                         "signal_id": str(item.get("signal_id", "")),

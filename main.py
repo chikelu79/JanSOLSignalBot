@@ -747,7 +747,7 @@ def arm_plan_records(signal: MarketSignal, sides: tuple[str, ...]) -> dict[str, 
     return {
         side: {
             **generated[side], "created_at": now, "expires_at": now + expiry,
-            "zone_alerted": False, "ready_alerted": False,
+            "approach_alerted": False, "zone_alerted": False, "ready_alerted": False,
         }
         for side in sides if side in generated
     }

@@ -686,7 +686,16 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
             continue
         volume_ok = analysis.relative_volume >= profile.volume_confirmation
         flow_ok = (side == "LONG" and (taker >= 15 or large >= 30)) or (side == "SHORT" and (taker <= -15 or large <= -30))
-        momentum_ok = analysis.score >= 20 if side == "LONG" else analysis.score <= -20
+        directional_clues = [
+            str(value).lower()
+            for value in (
+                list(getattr(analysis, "candle_patterns", []))
+                + list(getattr(analysis, "chart_structures", []))
+                + list(getattr(analysis, "divergences", []))
+            )
+        ]
+        opposing_clue = any(("bearish" if side == "LONG" else "bullish") in clue for clue in directional_clues)
+        momentum_ok = (analysis.score >= 20 if side == "LONG" else analysis.score <= -20) and not opposing_clue
         candle_ok = reversal_candle_confirmed(analysis, side)
         event_block = get_economic_risk().block_new_entries
         ready = inside and volume_ok and flow_ok and momentum_ok and candle_ok and not event_block
@@ -736,6 +745,34 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
                 f"Entry checklist: {'🟢' if passed_checks == 6 else '🟡'} {passed_checks}/6 checks passed",
                 "", "Wait for the required reversal and confirmation; entering the zone alone is not an entry.",
             ]), f"Armed {side.lower()} plan entered zone")
+        distance = 0.0 if inside else min(abs(signal.price - zone_low), abs(signal.price - zone_high)) / max(signal.price, 1e-9) * 100.0
+        approach_distance = {"SCALPING": 0.35, "DAY": 0.75, "SWING": 1.50}.get(profile.horizon, 0.75)
+        directional_watch = flow_ok and (momentum_ok or candle_ok) and not opposing_clue
+        if not inside and distance <= approach_distance and directional_watch and not bool(plan.get("approach_alerted", False)):
+            plan["approach_alerted"] = True
+            plans[side] = plan
+            set_armed_trade_plans(signal.symbol, plans)
+            missing = []
+            if not volume_ok:
+                missing.append("volume")
+            if not momentum_ok:
+                missing.append("momentum turn")
+            if not candle_ok:
+                missing.append("reversal candle")
+            if event_block:
+                missing.append("event safety clearance")
+            return AlertDecision(True, "ARMED_PLAN_APPROACHING", signal.symbol, "\n".join([
+                f"👀 {signal.symbol} {side} PLAN APPROACHING", "",
+                f"Current price: {price_text(signal.price)}",
+                f"Decision zone: {price_text(zone_low)} to {price_text(zone_high)} ({distance:.2f}% away)",
+                f"Invalidation: {price_text(plan['stop'])}",
+                f"Directional evidence: {'momentum' if momentum_ok else 'reversal'} + order flow",
+                f"Volume: {analysis.relative_volume:.2f}× ({'passed' if volume_ok else 'missing'})",
+                f"Taker: {taker:+.1f}% | Large: {large:+.1f}%",
+                f"Still required: {', '.join(missing) if missing else 'price entering the zone'}",
+                f"Event mode: {'monitoring continues; standard entry is paused' if event_block else 'clear'}",
+                "", "Advance warning only. Let price reach the zone and wait for the confirmation-ready alert.",
+            ]), f"Armed {side.lower()} plan is approaching its zone")
     return AlertDecision(False, "NONE", signal.symbol, "", "Armed plans are waiting for price")
 
 

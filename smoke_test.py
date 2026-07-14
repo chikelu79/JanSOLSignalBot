@@ -273,9 +273,16 @@ def main() -> None:
     assert set(generated_plans) == {"LONG", "SHORT"}
     armed_long = {
         **generated_plans["LONG"], "created_at": 1.0, "expires_at": 9999999999.0,
-        "zone_alerted": False, "ready_alerted": False,
+        "approach_alerted": False, "zone_alerted": False, "ready_alerted": False,
     }
     set_armed_trade_plans(signal.symbol, {"LONG": armed_long})
+    signal.price = armed_long["zone_high"] * 1.003
+    approach_alert = evaluate_armed_trade_plan_alert(
+        signal,
+        {"taker_flow_imbalance": 25.0, "large_flow_imbalance": 40.0},
+    )
+    assert approach_alert.alert_type == "ARMED_PLAN_APPROACHING"
+    assert "Advance warning only" in approach_alert.message
     signal.price = (armed_long["zone_low"] + armed_long["zone_high"]) / 2.0
     armed_alert = evaluate_armed_trade_plan_alert(
         signal,
