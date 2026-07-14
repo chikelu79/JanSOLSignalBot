@@ -44,6 +44,7 @@ from notifier import (
     build_active_setups_message,
     build_radar_stats_message,
     build_scan_message,
+    build_trade_dashboard,
     evaluate_signal_alert,
     evaluate_derivatives_alert,
     evaluate_economic_alert,
@@ -489,9 +490,11 @@ async def start_command(
         f"{'ON' if is_monitor_enabled() else 'OFF'}\n"
         f"Scan interval: "
         f"{MONITOR_INTERVAL_SECONDS} seconds\n\n"
+        "Best starting point: /trade opens the visual trade planner.\n\n"
         "Commands:\n"
         "/price - Current selected-pair price\n"
         "/scan - Full multi-timeframe scan\n"
+        "/trade - Visual trade planner\n"
         "/analysis - Same as /scan\n"
         "/timeframes - Compact timeframe view\n"
         "/pair BTCUSDT - Change selected pair\n"
@@ -690,6 +693,61 @@ async def analysis_command(
         update,
         context,
     )
+
+
+def build_trade_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔄 Refresh", callback_data="trade:refresh"),
+            InlineKeyboardButton("📋 Full scan", callback_data="trade:scan"),
+        ],
+        [
+            InlineKeyboardButton("🎛 Profile", callback_data="trade:profile"),
+            InlineKeyboardButton("🧮 Risk form", callback_data="trade:risk"),
+        ],
+    ])
+
+
+async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    symbol = get_selected_pair()
+    waiting = await update.effective_message.reply_text(f"🎯 Building {symbol} trade plan...")
+    try:
+        signal, macro_context, _ = await analyze_symbol(symbol, include_context=True)
+        await waiting.edit_text(
+            build_trade_dashboard(signal, macro_context),
+            reply_markup=build_trade_keyboard(),
+        )
+    except Exception as error:
+        logger.exception("Trade planner failed for %s.", symbol)
+        await waiting.edit_text(f"⚠️ Trade planner failed.\n\nError: {type(error).__name__}: {error}")
+
+
+async def trade_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None:
+        return
+    await query.answer()
+    action = str(query.data).removeprefix("trade:")
+    if action == "refresh":
+        symbol = get_selected_pair()
+        await query.edit_message_text(f"🎯 Refreshing {symbol} trade plan...")
+        try:
+            signal, macro_context, _ = await analyze_symbol(symbol, include_context=True)
+            await query.edit_message_text(
+                build_trade_dashboard(signal, macro_context),
+                reply_markup=build_trade_keyboard(),
+            )
+        except Exception as error:
+            await query.edit_message_text(f"⚠️ Refresh failed: {type(error).__name__}: {error}")
+    elif action == "scan":
+        symbol = get_selected_pair()
+        await query.message.reply_text(f"🔍 Building the complete {symbol} evidence report...")
+        signal, macro_context, _ = await analyze_symbol(symbol, include_context=True)
+        await send_long_message(update, build_scan_message(signal, macro_context))
+    elif action == "profile":
+        await query.message.reply_text(build_profile_text(), reply_markup=build_profile_keyboard())
+    elif action == "risk":
+        await riskcalc_command(update, context)
 
 
 async def calendar_command(
@@ -1736,6 +1794,10 @@ async def post_init(
             "Run full market analysis",
         ),
         BotCommand(
+            "trade",
+            "Open visual trade planner",
+        ),
+        BotCommand(
             "analysis",
             "Run full market analysis",
         ),
@@ -1908,6 +1970,20 @@ def main() -> None:
         CommandHandler(
             "scan",
             scan_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "trade",
+            trade_command,
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            trade_callback,
+            pattern=r"^trade:",
         )
     )
 

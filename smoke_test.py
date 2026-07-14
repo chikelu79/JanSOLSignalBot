@@ -17,6 +17,7 @@ from notifier import (
     build_early_opportunity_radar,
     build_radar_stats_message,
     build_scan_message,
+    build_trade_dashboard,
     evaluate_derivatives_alert,
     evaluate_early_opportunity_alert,
     evaluate_economic_alert,
@@ -194,6 +195,22 @@ def main() -> None:
     tiny_cross.two_back_mfi = tiny_cross.previous_mfi = tiny_cross.mfi = 50.0
     tiny_radar = build_early_opportunity_radar(signal)
     assert not any("RSI 6 crossed" in line or "RSI 12 crossed" in line for line in tiny_radar)
+    signal.analyses = {
+        interval: SimpleNamespace(
+            support=99.0 - index * 0.5, resistance=102.0 + index * 0.5,
+            atr=1.0, relative_volume=1.3, score=25.0 if interval == "15m" else -10.0,
+        )
+        for index, interval in enumerate(("15m", "1h", "4h"))
+    }
+    signal.price = 100.5
+    trade_dashboard = build_trade_dashboard(
+        signal,
+        SimpleNamespace(adjusted_score=10.0, taker_flow_imbalance=20.0, large_flow_imbalance=35.0),
+    )
+    assert "TRADE PLANNER" in trade_dashboard
+    assert "LONG PLAN" in trade_dashboard and "SHORT PLAN" in trade_dashboard
+    assert "Provisional TP1:" in trade_dashboard and "Provisional TP3:" in trade_dashboard
+    assert "Use /scan for the complete evidence report." in trade_dashboard
     signal.price = 100.5
     signal.analyses = {}
     signal.analyses = {

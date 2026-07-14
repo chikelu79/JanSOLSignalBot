@@ -511,6 +511,106 @@ def build_radar_stats_message() -> str:
     return "\n".join(lines)
 
 
+def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> str:
+    profile = get_profile(get_trading_horizon(), get_risk_style())
+    analyses = [
+        (interval, signal.analyses[interval])
+        for interval in profile.primary_timeframes
+        if interval in signal.analyses
+    ]
+    if not analyses:
+        return f"⚠️ No {profile.horizon.lower()} planning timeframes are available for {signal.symbol}."
+
+    price = signal.price
+    all_supports = [(analysis.support, interval, analysis) for interval, analysis in analyses if analysis.support > 0]
+    all_resistances = [(analysis.resistance, interval, analysis) for interval, analysis in analyses if analysis.resistance > 0]
+    if not all_supports:
+        interval, analysis = analyses[0]
+        all_supports = [(price - max(float(analysis.atr), price * 0.005), interval, analysis)]
+    if not all_resistances:
+        interval, analysis = analyses[0]
+        all_resistances = [(price + max(float(analysis.atr), price * 0.005), interval, analysis)]
+    supports = [item for item in all_supports if item[0] <= price]
+    resistances = [item for item in all_resistances if item[0] >= price]
+    long_level, long_interval, long_analysis = (
+        max(supports, key=lambda item: item[0])
+        if supports else min(all_supports, key=lambda item: abs(item[0] - price))
+    )
+    short_level, short_interval, short_analysis = (
+        min(resistances, key=lambda item: item[0])
+        if resistances else min(all_resistances, key=lambda item: abs(item[0] - price))
+    )
+
+    taker_flow = float(getattr(context, "taker_flow_imbalance", 0.0)) if context is not None else 0.0
+    large_flow = float(getattr(context, "large_flow_imbalance", 0.0)) if context is not None else 0.0
+    economic = get_economic_risk()
+
+    def plan(side: str, level: float, interval: str, analysis: Any) -> list[str]:
+        atr = max(float(analysis.atr), price * 0.002)
+        if side == "LONG":
+            zone_low, zone_high = level, level + atr * 0.25
+            stop = level - atr * 0.75
+            direction = 1.0
+            flow_support = taker_flow >= 15.0 or large_flow >= 30.0
+            momentum_support = analysis.score >= 20.0
+            trigger = "bullish reversal close + RSI/Stoch turn upward"
+        else:
+            zone_low, zone_high = level - atr * 0.25, level
+            stop = level + atr * 0.75
+            direction = -1.0
+            flow_support = taker_flow <= -15.0 or large_flow <= -30.0
+            momentum_support = analysis.score <= -20.0
+            trigger = "bearish rejection close + RSI/Stoch turn downward"
+        midpoint = (zone_low + zone_high) / 2.0
+        risk = abs(midpoint - stop)
+        in_zone = zone_low <= price <= zone_high
+        distance = 0.0 if in_zone else min(abs(price - zone_low), abs(price - zone_high)) / max(price, 1e-9) * 100.0
+        volume_ok = analysis.relative_volume >= profile.volume_confirmation
+        if economic.block_new_entries:
+            status = "🔴 EVENT BLOCK"
+        elif in_zone and volume_ok and flow_support and momentum_support:
+            status = "🟢 CONFIRMATION READY"
+        elif in_zone:
+            status = "🔴 IN ZONE — NOT CONFIRMED"
+        else:
+            status = "🟡 WAITING FOR PRICE"
+        icon = "🟢" if side == "LONG" else "🔴"
+        return [
+            f"{icon} {side} PLAN — {status}",
+            f"Zone: {price_text(zone_low)} to {price_text(zone_high)} ({distance:.2f}% away; {interval} structure)",
+            f"Invalidation: {price_text(stop)}",
+            f"Trigger required: {trigger}",
+            f"Volume / flow: {'🟢' if volume_ok else '🟡'} {analysis.relative_volume:.2f}× / "
+            f"{'🟢' if flow_support else '🔴'} taker {taker_flow:+.1f}%, large {large_flow:+.1f}%",
+            f"Provisional TP1: {price_text(midpoint + direction * risk * 1.25)} (1.25R)",
+            f"Provisional TP2: {price_text(midpoint + direction * risk * 2.0)} (2.00R)",
+            f"Provisional TP3: {price_text(midpoint + direction * risk * 3.0)} (3.00R)",
+        ]
+
+    score = float(getattr(context, "adjusted_score", signal.score)) if context is not None else signal.score
+    bias = "BULLISH" if score >= profile.watch_threshold else "BEARISH" if score <= -profile.watch_threshold else "MIXED / WAIT"
+    lines = [
+        f"🎯 {signal.symbol} TRADE PLANNER",
+        f"Profile: {profile.horizon} / {profile.risk_style}",
+        "",
+        f"Current price: {price_text(price)}",
+        f"Decision bias: {bias} ({score:+.1f}; directional at ±{profile.watch_threshold:.0f})",
+        f"Economic risk: {economic.status}",
+        "",
+        *plan("LONG", long_level, long_interval, long_analysis),
+        "",
+        *plan("SHORT", short_level, short_interval, short_analysis),
+        "",
+        "RULES",
+        "• Let price enter a zone; do not chase it.",
+        "• A zone is not an entry without the displayed reversal, volume and flow confirmation.",
+        "• Targets are provisional until an entry is confirmed.",
+        "",
+        "Use /scan for the complete evidence report.",
+    ]
+    return "\n".join(lines)
+
+
 def evidence_icon(reason: str) -> str:
     text = reason.lower()
     bearish = ("crossed below", "bearish", "turned downward", "selling pressure", "flipped negative", "below its", "below ema")
