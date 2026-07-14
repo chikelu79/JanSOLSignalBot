@@ -758,7 +758,7 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
         if len(pattern_rows) >= 4:
             break
 
-    def plan(side: str, level: float, interval: str, analysis: Any) -> list[str]:
+    def plan(side: str, level: float, interval: str, analysis: Any) -> tuple[list[str], dict[str, Any]]:
         atr = max(float(analysis.atr), price * 0.002)
         if side == "LONG":
             zone_low, zone_high = level, level + atr * 0.25
@@ -788,7 +788,7 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
         else:
             status = "🟡 WAITING FOR PRICE"
         icon = "🟢" if side == "LONG" else "🔴"
-        return [
+        rows = [
             f"{icon} {side} PLAN — {status}",
             f"Zone: {price_text(zone_low)} to {price_text(zone_high)} ({distance:.2f}% away; {interval} structure)",
             f"Invalidation: {price_text(stop)}",
@@ -799,10 +799,44 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
             f"Provisional TP2: {price_text(midpoint + direction * risk * 2.0)} (2.00R)",
             f"Provisional TP3: {price_text(midpoint + direction * risk * 3.0)} (3.00R)",
         ]
+        return rows, {
+            "side": side, "distance": distance, "in_zone": in_zone,
+            "volume_ok": volume_ok, "flow_support": flow_support,
+            "momentum_support": momentum_support, "trigger": trigger,
+            "compressed": float(getattr(analysis, "bollinger_width", 99.0)) < 3.0,
+        }
 
     score = float(getattr(context, "adjusted_score", signal.score)) if context is not None else signal.score
     bias = "BULLISH" if score >= profile.watch_threshold else "BEARISH" if score <= -profile.watch_threshold else "MIXED / WAIT"
     armed_sides = list(get_armed_trade_plans().get(signal.symbol, {}))
+    long_rows, long_focus = plan("LONG", long_level, long_interval, long_analysis)
+    short_rows, short_focus = plan("SHORT", short_level, short_interval, short_analysis)
+    focus = min((long_focus, short_focus), key=lambda item: item["distance"])
+    focus_side = focus["side"]
+    focus_armed = focus_side in armed_sides
+    if economic.block_new_entries:
+        next_action = "Wait until the economic-event block has cleared."
+    elif not focus["in_zone"]:
+        next_action = f"Let price reach the {focus_side} zone; do not chase it."
+    elif not focus["volume_ok"] or not focus["flow_support"]:
+        next_action = "Price is in zone, but confirmation is incomplete. Wait for volume and flow to agree."
+    elif not focus["momentum_support"]:
+        next_action = f"Wait for the required {focus['trigger']}."
+    else:
+        next_action = f"Require the {focus['trigger']} and wait for the confirmed-entry alert."
+    focus_proximity = "IN ZONE" if focus["in_zone"] else f"{focus['distance']:.2f}% AWAY"
+    focus_lines = [
+        f"🎯 FOCUS: {focus_side} — {focus_proximity}",
+        f"Price at zone: {'🟢 YES' if focus['in_zone'] else '🟡 NOT YET'}",
+        f"Momentum: {'🟢 SUPPORTIVE' if focus['momentum_support'] else '🟡 WAITING FOR TURN'}",
+        f"Volume: {'🟢 PASSED' if focus['volume_ok'] else '🟡 MISSING'}",
+        f"Order flow: {'🟢 SUPPORTIVE' if focus['flow_support'] else '🔴 OPPOSING / UNCONFIRMED'}",
+        f"Economic event: {'🔴 BLOCKED' if economic.block_new_entries else '🟢 CLEAR'}",
+        f"Plan control: {'🟢 ARMED' if focus_armed else f'⚪ NOT ARMED — tap Arm {focus_side.title()} to monitor it'}",
+    ]
+    if focus["compressed"]:
+        focus_lines.append("Breakout risk: 🔵 COMPRESSION — require a close/retest; the level can break instead of reverse.")
+    focus_lines.append(f"Next action: {next_action}")
     lines = [
         f"🎯 {signal.symbol} TRADE PLANNER",
         f"Profile: {profile.horizon} / {profile.risk_style}",
@@ -812,6 +846,8 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
         f"Economic risk: {economic.status}",
         f"Armed plans: {', '.join(armed_sides) if armed_sides else 'NONE'}",
         "",
+        *focus_lines,
+        "",
         "KEY LEVEL MAP",
         *(resistance_rows or ["🔴 No valid resistance above current price."]),
         f"🔵 NOW: {price_text(price)}",
@@ -820,9 +856,9 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
         "REVERSAL / PATTERN CLUES",
         *(pattern_rows or ["• No active multi-timeframe reversal pattern; wait for a candle/oscillator trigger at a key level."]),
         "",
-        *plan("LONG", long_level, long_interval, long_analysis),
+        *long_rows,
         "",
-        *plan("SHORT", short_level, short_interval, short_analysis),
+        *short_rows,
         "",
         "RULES",
         "• Let price enter a zone; do not chase it.",

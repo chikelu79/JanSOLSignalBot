@@ -227,6 +227,11 @@ def main() -> None:
         SimpleNamespace(adjusted_score=10.0, taker_flow_imbalance=20.0, large_flow_imbalance=35.0),
     )
     assert "TRADE PLANNER" in trade_dashboard
+    assert "🎯 FOCUS:" in trade_dashboard
+    assert "Price at zone:" in trade_dashboard
+    assert "Momentum:" in trade_dashboard and "Volume:" in trade_dashboard
+    assert "Order flow:" in trade_dashboard and "Economic event:" in trade_dashboard
+    assert "Plan control:" in trade_dashboard and "Next action:" in trade_dashboard
     assert "LONG PLAN" in trade_dashboard and "SHORT PLAN" in trade_dashboard
     assert "KEY LEVEL MAP" in trade_dashboard
     assert "S1:" in trade_dashboard and "R1:" in trade_dashboard
