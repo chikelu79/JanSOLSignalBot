@@ -687,6 +687,7 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
         candle_ok = reversal_candle_confirmed(analysis, side)
         event_block = get_economic_risk().block_new_entries
         ready = inside and volume_ok and flow_ok and momentum_ok and candle_ok and not event_block
+        passed_checks = sum((inside, volume_ok, flow_ok, momentum_ok, candle_ok, not event_block))
         if ready and not bool(plan.get("ready_alerted", False)):
             plan["ready_alerted"] = True
             plan["signal_id"] = record_entry_signal("ARMED", signal.symbol, side, plan, str(plan["interval"]))
@@ -715,6 +716,7 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
                 f"TP2: {price_text(plan['tp2'])}", f"TP3: {price_text(plan['tp3'])}",
                 f"Volume: {analysis.relative_volume:.2f}× | Taker: {taker:+.1f}% | Large: {large:+.1f}%",
                 "Reversal candle: 🟢 CONFIRMED",
+                f"Entry checklist: 🟢 {passed_checks}/6 checks passed",
                 "", "Confirm the reversal candle and actual execution price before acting.",
             ]), f"Armed {side.lower()} plan reached confirmation")
         if inside and not bool(plan.get("zone_alerted", False)):
@@ -728,6 +730,7 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
                 f"Volume: {analysis.relative_volume:.2f}× ({'passed' if volume_ok else 'missing'})",
                 f"Taker: {taker:+.1f}% | Large: {large:+.1f}%", f"Invalidation: {price_text(plan['stop'])}",
                 f"Reversal candle: {'🟢 CONFIRMED' if candle_ok else '🟡 WAITING'}",
+                f"Entry checklist: {'🟢' if passed_checks == 6 else '🟡'} {passed_checks}/6 checks passed",
                 "", "Wait for the required reversal and confirmation; entering the zone alone is not an entry.",
             ]), f"Armed {side.lower()} plan entered zone")
     return AlertDecision(False, "NONE", signal.symbol, "", "Armed plans are waiting for price")
@@ -833,9 +836,10 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
         in_zone = zone_low <= price <= zone_high
         distance = 0.0 if in_zone else min(abs(price - zone_low), abs(price - zone_high)) / max(price, 1e-9) * 100.0
         volume_ok = analysis.relative_volume >= profile.volume_confirmation
+        candle_ok = reversal_candle_confirmed(analysis, side)
         if economic.block_new_entries:
             status = "🔴 EVENT BLOCK"
-        elif in_zone and volume_ok and flow_support and momentum_support:
+        elif in_zone and volume_ok and flow_support and momentum_support and candle_ok:
             status = "🟢 CONFIRMATION READY"
         elif in_zone:
             status = "🔴 IN ZONE — NOT CONFIRMED"
@@ -847,6 +851,7 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
             f"Zone: {price_text(zone_low)} to {price_text(zone_high)} ({distance:.2f}% away; {interval} structure)",
             f"Invalidation: {price_text(stop)}",
             f"Trigger required: {trigger}",
+            f"Reversal candle: {'🟢 CONFIRMED' if candle_ok else '🟡 WAITING'}",
             f"Volume / flow: {'🟢' if volume_ok else '🟡'} {analysis.relative_volume:.2f}× / "
             f"{'🟢' if flow_support else '🔴'} taker {taker_flow:+.1f}%, large {large_flow:+.1f}%",
             f"Provisional TP1: {price_text(midpoint + direction * risk * 1.25)} (1.25R)",
@@ -856,7 +861,7 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
         return rows, {
             "side": side, "distance": distance, "in_zone": in_zone,
             "volume_ok": volume_ok, "flow_support": flow_support,
-            "momentum_support": momentum_support, "trigger": trigger,
+            "momentum_support": momentum_support, "candle_ok": candle_ok, "trigger": trigger,
             "compressed": float(getattr(analysis, "bollinger_width", 99.0)) < 3.0,
         }
 
@@ -868,6 +873,12 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
     focus = min((long_focus, short_focus), key=lambda item: item["distance"])
     focus_side = focus["side"]
     focus_armed = focus_side in armed_sides
+    readiness_checks = (
+        focus["in_zone"], focus["momentum_support"], focus["candle_ok"],
+        focus["volume_ok"], focus["flow_support"], not economic.block_new_entries,
+    )
+    readiness_passed = sum(bool(value) for value in readiness_checks)
+    readiness_icon = "🟢" if readiness_passed == len(readiness_checks) else "🟡" if readiness_passed >= 3 else "🔴"
     if economic.block_new_entries:
         next_action = "Wait until the economic-event block has cleared."
     elif not focus["in_zone"]:
@@ -876,6 +887,8 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
         next_action = "Price is in zone, but confirmation is incomplete. Wait for volume and flow to agree."
     elif not focus["momentum_support"]:
         next_action = f"Wait for the required {focus['trigger']}."
+    elif not focus["candle_ok"]:
+        next_action = f"Momentum supports the plan, but wait for the required {focus['trigger']}."
     else:
         next_action = f"Require the {focus['trigger']} and wait for the confirmed-entry alert."
     focus_proximity = "IN ZONE" if focus["in_zone"] else f"{focus['distance']:.2f}% AWAY"
@@ -890,8 +903,10 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
         economic_check = f"🟢 {economic_summary} — entries allowed"
     focus_lines = [
         f"🎯 FOCUS: {focus_side} — {focus_proximity}",
+        f"Entry readiness: {readiness_icon} {readiness_passed}/{len(readiness_checks)} checks passed",
         f"Price at zone: {'🟢 YES' if focus['in_zone'] else '🟡 NOT YET'}",
         f"Momentum: {'🟢 SUPPORTIVE' if focus['momentum_support'] else '🟡 WAITING FOR TURN'}",
+        f"Reversal candle: {'🟢 CONFIRMED' if focus['candle_ok'] else '🟡 WAITING'}",
         f"Volume: {'🟢 PASSED' if focus['volume_ok'] else '🟡 MISSING'}",
         f"Order flow: {'🟢 SUPPORTIVE' if focus['flow_support'] else '🔴 OPPOSING / UNCONFIRMED'}",
         f"Economic event: {economic_check}",
@@ -1458,10 +1473,16 @@ def build_derivatives_alert_message(
     oi_value = float(derivatives.get("open_interest_value", 0.0))
     liquidation_total = float(derivatives.get("long_liquidations_1h", 0.0)) + float(derivatives.get("short_liquidations_1h", 0.0))
     liquidation_intensity = liquidation_total / oi_value * 100.0 if oi_value else 0.0
+    impact_lines: list[str] = []
+    if action.startswith("SUPPORTS "):
+        impact_lines = [f"Decision impact: 🟢 {action.split(':', 1)[0]}", ""]
+    elif action.startswith("OPPOSES "):
+        impact_lines = [f"Decision impact: 🔴 {action.split(':', 1)[0]}", ""]
     return "\n".join(
         [
             headings.get(alert_type, f"⚠️ {signal.symbol} DERIVATIVES ALERT"),
             "",
+            *impact_lines,
             f"Price: {price_text(signal.price)}",
             f"Technical direction: {signal.direction}",
             f"Funding: {float(derivatives.get('funding_rate', 0.0)) * 100:+.4f}% "

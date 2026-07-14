@@ -240,8 +240,10 @@ def main() -> None:
     assert reversal_candle_confirmed(SimpleNamespace(candle_patterns=["Bearish engulfing"], chart_structures=[]), "SHORT")
     assert not reversal_candle_confirmed(SimpleNamespace(candle_patterns=["Doji"], chart_structures=[]), "LONG")
     assert "🎯 FOCUS:" in trade_dashboard
+    assert "Entry readiness:" in trade_dashboard and "checks passed" in trade_dashboard
     assert "Price at zone:" in trade_dashboard
     assert "Momentum:" in trade_dashboard and "Volume:" in trade_dashboard
+    assert "Reversal candle:" in trade_dashboard
     assert "Order flow:" in trade_dashboard and "Economic event:" in trade_dashboard
     assert "EVENT APPROACHING — CAUTION" in trade_dashboard or "EVENT BLACKOUT — DO NOT OPEN A NEW TRADE" in trade_dashboard or "NO EVENT RESTRICTION" in trade_dashboard
     assert "Plan control:" in trade_dashboard and "Next action:" in trade_dashboard
@@ -420,6 +422,7 @@ def main() -> None:
     order_flow_alert = evaluate_derivatives_alert(signal, order_flow_data)
     assert order_flow_alert.alert_type == "ORDER_FLOW_SHIFT"
     assert "OPPOSES LONG" in order_flow_alert.message
+    assert "Decision impact: 🔴 OPPOSES LONG" in order_flow_alert.message
     assert "breakout/invalidation warning" in order_flow_alert.message
     remove_armed_trade_plans(signal.symbol)
     large_trade_data = {
@@ -452,6 +455,7 @@ def main() -> None:
     assert "Largest trade: $200,000.00 BUY — 40.0× average\nLarge-trade net flow:" in large_trade_alert.message
     assert "armed LONG zone" in large_trade_alert.message
     assert "SUPPORTS LONG" in large_trade_alert.message
+    assert "Decision impact: 🟢 SUPPORTS LONG" in large_trade_alert.message
     opposing_large_trade = evaluate_derivatives_alert(signal, {
         **large_trade_data, "large_flow_imbalance": -75.0,
         "largest_trade_side": "SELL",
