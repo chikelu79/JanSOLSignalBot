@@ -158,8 +158,10 @@ def format_timeframes(signal: MarketSignal) -> list[str]:
         else:
             lines.append(
                 f"{direction_emoji(analysis.direction)} {interval}: "
-                f"{analysis.direction} ({analysis.score:+.0f})"
+                f"{analysis.direction} ({analysis.score:+.0f}; LONG ≥ +62, SHORT ≤ -62)"
             )
+        if interval in {"15m", "4h"}:
+            lines.append("")
     return lines
 
 
@@ -202,11 +204,12 @@ def format_market_context(context: Any | None) -> list[str]:
     liquidation_icon = "🟢" if liquidation_pressure == "SHORT SQUEEZE" else "🔴" if liquidation_pressure == "LONG FLUSH" else "🟡" if liq_regime != "LOW" else "🔵"
     return [
         f"{direction_emoji(getattr(context, 'btc_direction', 'UNKNOWN'))} BTC: {getattr(context, 'btc_direction', 'UNKNOWN')} "
-        f"({getattr(context, 'btc_score', 0):+.1f})",
+        f"({getattr(context, 'btc_score', 0):+.1f}; directional at ±62)",
         f"{direction_emoji(getattr(context, 'eth_direction', 'UNKNOWN'))} ETH: {getattr(context, 'eth_direction', 'UNKNOWN')} "
-        f"({getattr(context, 'eth_score', 0):+.1f})",
+        f"({getattr(context, 'eth_score', 0):+.1f}; directional at ±62)",
+        "",
         f"🔵 BTC correlation: {correlation:.2f} ({correlation_regime}; high ≥ 0.70)",
-        f"🔵 BTC dominance: {getattr(context, 'btc_dominance', 0):.2f}%",
+        f"🔵 BTC dominance: {getattr(context, 'btc_dominance', 0):.2f}% (altcoin headwind ≥ 58%; support ≤ 52%)",
         f"{'🟢' if market_change >= 1 else '🔴' if market_change <= -1 else '🟡'} Crypto market 24h: {market_change:+.2f}% (strong move at ±3%)",
         f"{'🔴' if vix_value >= 25 else '🟡' if vix_value >= 18 else '🟢'} VIX: {vix_value:.2f} "
         f"({getattr(context, 'vix_regime', 'UNKNOWN')}; risk stress usually ≥ 25)",
@@ -215,15 +218,17 @@ def format_market_context(context: Any | None) -> list[str]:
         f"{funding_icon} Funding: {funding_rate * 100:+.4f}% "
         f"({getattr(context, 'funding_label', 'UNAVAILABLE')}, "
         f"{funding_effect}; crowded at ±0.0500%)",
-        f"🔵 Open interest: ${getattr(context, 'open_interest_value', 0.0):,.0f}",
+        "",
+        f"🔵 Open interest: ${getattr(context, 'open_interest_value', 0.0):,.0f} (baseline; direction comes from its % change)",
         f"{oi_icon} OI change: {oi_5m:+.2f}% (5m), {oi_1h:+.2f}% (1h) — {oi_regime} (high at ±5%/1h)",
         f"🔵 Liquidations 1h: longs ${long_liq:,.0f} / shorts ${short_liq:,.0f}",
         f"{liquidation_icon} Liquidation pressure: {liquidation_pressure} — "
         f"{liq_regime} intensity {liq_intensity:.3f}% of OI (high ≥ 0.10%)",
         f"🔵 Derivatives source: {getattr(context, 'derivatives_provider', 'UNKNOWN')}",
+        "",
         f"{direction_emoji('LONG' if getattr(context, 'macro_bias', 'NEUTRAL') == 'BULLISH' else 'SHORT' if getattr(context, 'macro_bias', 'NEUTRAL') == 'BEARISH' else 'WAIT')} Macro bias: {getattr(context, 'macro_bias', 'NEUTRAL')} "
-        f"({getattr(context, 'macro_score', 0):+.1f})",
-        f"Context adjustment: {getattr(context, 'score_adjustment', 0):+.1f}",
+        f"({getattr(context, 'macro_score', 0):+.1f}; bullish ≥ +8, bearish ≤ -8)",
+        f"🟡 Context adjustment: {getattr(context, 'score_adjustment', 0):+.1f} (meaningful at ±5; capped at ±30)",
     ]
 
 
@@ -340,12 +345,14 @@ def build_confidence_breakdown(
         risk_line = f"Risk: {risk_label} ({risk_quality:.0f}/100 setup quality)"
 
     return [
-        f"Trend: {abs(trend):.0f}% {_bias_label(trend)}",
-        f"Momentum: {abs(momentum):.0f}% {_bias_label(momentum)}",
-        f"Macro: {abs(macro):.0f}% {_bias_label(macro)}",
-        f"Liquidity position: {abs(liquidity):.0f}% {_bias_label(liquidity)}",
-        f"Volume activity: {volume:.0f}%",
-        f"Timeframe alignment: {alignment:.0f}%",
+        f"Trend: {abs(trend):.0f}% {_bias_label(trend)} (directional at ±18%)",
+        f"Momentum: {abs(momentum):.0f}% {_bias_label(momentum)} (directional at ±18%)",
+        "",
+        f"Macro: {abs(macro):.0f}% {_bias_label(macro)} (directional at ±18%)",
+        f"Liquidity position: {abs(liquidity):.0f}% {_bias_label(liquidity)} (directional at ±18%)",
+        "",
+        f"Volume activity: {volume:.0f}% (active ≥ 67%; strong ≥ 100%)",
+        f"Timeframe alignment: {alignment:.0f}% (strong ≥ 70%; mixed < 50%)",
         risk_line,
     ]
 
@@ -435,13 +442,16 @@ def build_scan_message(signal: MarketSignal, context: Any | None = None) -> str:
     lines = [
         f"📡 {signal.symbol} MARKET SCAN",
         "",
-        f"Price: {price_text(signal.price)}",
+        f"Price: {price_text(signal.price)} (reference: planned entry zone when a setup exists)",
         f"{direction_emoji(signal.direction)} Direction: {signal.direction}",
-        f"Technical score: {signal.score:+.1f}",
-        f"Adjusted score: {adjusted:+.1f}",
-        f"Confidence: {min(95, int(abs(adjusted)))}%",
-        f"Grade: {get_signal_grade(signal)}",
-        f"Readiness: {get_readiness_label(signal)}",
+        "",
+        f"Technical score: {signal.score:+.1f} (LONG ≥ +62; SHORT ≤ -62)",
+        f"Adjusted score: {adjusted:+.1f} (LONG ≥ +62; SHORT ≤ -62)",
+        f"Confidence: {min(95, int(abs(adjusted)))}% (setup ≥ 62%; confirmed ≥ 74%; strong ≥ 84%)",
+        "",
+        f"Grade: {get_signal_grade(signal)} (A+ ≥ 95; A ≥ 90; B ≥ 80; C ≥ 70; D < 70)",
+        f"Readiness: {get_readiness_label(signal)} (BUILDING ≥ 50; NEAR TRIGGER ≥ 70; HIGH QUALITY ≥ 85)",
+        "",
         f"Execution status: {status}",
         f"Action: {status_detail}",
         "",
@@ -452,6 +462,7 @@ def build_scan_message(signal: MarketSignal, context: Any | None = None) -> str:
         "ECONOMIC CALENDAR",
         f"{'🔴' if economic.block_new_entries else '🟡' if economic.status == 'UPCOMING' else '🟢'} Risk: {economic.status}",
         economic.detail,
+        "",
         f"{'🌑' if lunar.phase == 'NEW MOON' else '🌕'} Lunar: {lunar.label} — {lunar.detail}",
         "",
         "TIMEFRAMES",
