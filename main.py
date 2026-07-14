@@ -526,6 +526,7 @@ async def start_command(
         "/radarstats - Show opportunity-watch outcomes\n"
         "/stats - Show confirmed-signal success rate\n"
         "/status - Bot and monitor status"
+        "\n/health - Live data-source and decision-gate health"
     )
 
     await send_long_message(
@@ -579,6 +580,85 @@ async def status_command(
         update,
         text,
     )
+
+
+def build_health_message(
+    signal: MarketSignal,
+    macro_context: Any | None,
+    snapshot: dict[str, Any],
+    derivatives: dict[str, Any] | None,
+    news: dict[str, Any] | None,
+) -> str:
+    now = time.time()
+    available_timeframes = len(signal.analyses)
+    candle_errors = snapshot.get("errors", {})
+    derivatives = derivatives or {}
+    provider = str(derivatives.get("provider", "UNAVAILABLE"))
+    fetched_at = float(derivatives.get("fetched_at", 0.0))
+    age = max(0.0, now - fetched_at) if fetched_at > 0 else float("inf")
+    derivatives_fresh = bool(derivatives.get("live")) and age <= 180.0
+    fallback = "fallback" in provider.lower()
+    news = news or {}
+    news_live = bool(news.get("live"))
+    economic = get_profile_economic_risk()
+    critical: list[str] = []
+    warnings: list[str] = []
+    if available_timeframes < 4:
+        critical.append("insufficient candle timeframes")
+    if not derivatives_fresh:
+        critical.append("derivatives/order-flow data are stale or unavailable")
+    if macro_context is None:
+        warnings.append("macro context unavailable")
+    if not news_live:
+        warnings.append("news feeds unavailable")
+    if fallback:
+        warnings.append(f"derivatives use {provider}")
+    gate = "🔴 BLOCKED" if critical else "🟡 DEGRADED" if warnings else "🟢 READY"
+    derivatives_line = (
+        f"{'🔵' if fallback else '🟢'} LIVE {'FALLBACK' if fallback else 'PRIMARY'} — {provider} ({age:.0f}s old)"
+        if derivatives_fresh
+        else f"🔴 STALE / UNAVAILABLE — {provider}"
+    )
+    lines = [
+        "🩺 DECISION ENGINE HEALTH",
+        "",
+        f"Selected pair: {signal.symbol}",
+        f"Entry decision gate: {gate}",
+        f"Monitor / Auto Plan: {'🟢 ON / ON' if is_monitor_enabled() and is_auto_plan_enabled() else '🔴 INCOMPLETE'}",
+        "",
+        "LIVE DATA SOURCES",
+        f"{'🟢' if available_timeframes >= 4 else '🔴'} Price & technicals: {available_timeframes}/6 timeframes; {len(candle_errors)} errors",
+        f"Derivatives & order flow: {derivatives_line}",
+        f"{'🟢' if macro_context is not None else '🔴'} Macro engine: {'AVAILABLE' if macro_context is not None else 'UNAVAILABLE'}",
+        f"{'🟢' if bool(getattr(macro_context, 'fear_greed_live', False)) else '🟡'} Fear & Greed: {'LIVE' if bool(getattr(macro_context, 'fear_greed_live', False)) else 'FALLBACK / UNAVAILABLE'}",
+        f"{'🟢' if bool(getattr(macro_context, 'coinbase_premium_live', False)) else '🟡'} Coinbase premium: {'LIVE' if bool(getattr(macro_context, 'coinbase_premium_live', False)) else 'UNAVAILABLE'}",
+        f"{'🟢' if news_live else '🔴'} News intelligence: {'LIVE' if news_live else 'UNAVAILABLE'} ({len(news.get('errors', []))} feed errors)",
+        f"{'🔴' if economic.block_new_entries else '🟢'} Economic-event gate: {economic.status}",
+    ]
+    if critical:
+        lines.extend(["", "ENTRY BLOCKERS", *[f"• {value}" for value in critical]])
+    if warnings:
+        lines.extend(["", "DEGRADED INPUTS", *[f"• {value}" for value in warnings]])
+    lines.extend(["", "A confirmed entry requires fresh derivatives/order-flow data. Missing optional macro or news data lowers context quality but cannot manufacture a signal."])
+    return "\n".join(lines)
+
+
+async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    symbol = get_selected_pair()
+    waiting = await update.effective_message.reply_text("🩺 Checking decision-engine data sources...")
+    try:
+        signal, macro_context, snapshot = await analyze_symbol(symbol, include_context=True)
+        derivatives, news = await asyncio.gather(
+            fetch_derivatives_context(symbol),
+            fetch_news_intelligence(),
+            return_exceptions=True,
+        )
+        derivatives_data = None if isinstance(derivatives, Exception) else derivatives
+        news_data = None if isinstance(news, Exception) else news
+        await edit_or_reply(update, waiting, build_health_message(signal, macro_context, snapshot, derivatives_data, news_data))
+    except Exception as error:
+        logger.exception("Health command failed.")
+        await waiting.edit_text(f"⚠️ Decision-engine health check failed: {type(error).__name__}: {error}")
 
 
 async def price_command(
@@ -2058,6 +2138,10 @@ async def post_init(
             "status",
             "Show bot status",
         ),
+        BotCommand(
+            "health",
+            "Check live data and decision gate",
+        ),
     ]
 
     await application.bot.set_my_commands(
@@ -2161,6 +2245,13 @@ def main() -> None:
         CommandHandler(
             "status",
             status_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "health",
+            health_command,
         )
     )
 

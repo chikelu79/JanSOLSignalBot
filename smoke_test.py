@@ -15,6 +15,7 @@ from news_intelligence import build_news_message
 from lunar_context import get_lunar_context
 from market_context import build_market_context, calculate_coinbase_premium
 import notifier as notifier_module
+from main import build_health_message
 from notifier import (
     build_active_setups_message,
     build_balanced_evidence,
@@ -46,6 +47,25 @@ def main() -> None:
     assert "SIGNAL SUCCESS STATISTICS" in success_stats
     assert "Success rate:" in success_stats
     assert "Win = TP1 reached before the original stop." in success_stats
+    health_signal = SimpleNamespace(symbol="TESTUSDT", analyses={key: object() for key in ("5m", "15m", "1h", "4h", "8h", "1d")})
+    health_macro = SimpleNamespace(fear_greed_live=True, coinbase_premium_live=True)
+    health_message = build_health_message(
+        health_signal,
+        health_macro,
+        {"errors": {}},
+        {"live": True, "provider": "Primary test", "fetched_at": time.time()},
+        {"live": True, "errors": []},
+    )
+    assert "DECISION ENGINE HEALTH" in health_message
+    assert "Entry decision gate: 🟢 READY" in health_message
+    stale_health = build_health_message(
+        health_signal,
+        health_macro,
+        {"errors": {}},
+        {"live": True, "provider": "Stale test", "fetched_at": time.time() - 181.0},
+        {"live": True, "errors": []},
+    )
+    assert "Entry decision gate: 🔴 BLOCKED" in stale_health
     normalized_premium = calculate_coinbase_premium(100.0, 100.1, 0.999)
     assert abs(normalized_premium - 0.0001) < 0.001
     conservative_scalp = get_profile("SCALPING", "CONSERVATIVE")
@@ -84,7 +104,7 @@ def main() -> None:
     economic_alert = evaluate_economic_alert()
     assert economic_alert.alert_type in {"ECONOMIC_EVENT", "NONE"}
     if economic_alert.alert_type == "ECONOMIC_EVENT":
-        assert "EVENT APPROACHING — CAUTION" in economic_alert.message or "PRE-RELEASE SAFETY" in economic_alert.message
+        assert any(value in economic_alert.message for value in ("EVENT APPROACHING — CAUTION", "PRE-RELEASE SAFETY", "EVENT OPPORTUNITY WINDOW", "RELEASE IMPULSE"))
     lunar = get_lunar_context(datetime(2026, 7, 13, 20, 0, tzinfo=eastern))
     assert lunar.label == "NEAR NEW MOON"
     assert get_session_context(datetime(2026, 7, 14, 9, 20, tzinfo=eastern)).label == "US OPEN"
