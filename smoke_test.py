@@ -245,11 +245,14 @@ def main() -> None:
     assert reversal_candle_confirmed(SimpleNamespace(candle_patterns=["Bearish engulfing"], chart_structures=[]), "SHORT")
     assert not reversal_candle_confirmed(SimpleNamespace(candle_patterns=["Doji"], chart_structures=[]), "LONG")
     assert "🎯 FOCUS:" in trade_dashboard
-    assert "Entry readiness:" in trade_dashboard and "checks passed" in trade_dashboard
-    assert "Price at zone:" in trade_dashboard
-    assert "Momentum:" in trade_dashboard and "Volume:" in trade_dashboard
-    assert "Reversal candle:" in trade_dashboard
-    assert "Order flow:" in trade_dashboard and "Economic event:" in trade_dashboard
+    assert "Directional agreement:" in trade_dashboard or "NO CLEAR DIRECTION" in trade_dashboard
+    if "NO CLEAR DIRECTION" not in trade_dashboard:
+        assert "Entry readiness:" in trade_dashboard and "checks passed" in trade_dashboard
+        assert "Price at zone:" in trade_dashboard
+        assert "Momentum:" in trade_dashboard and "Volume:" in trade_dashboard
+        assert "Reversal candle:" in trade_dashboard
+        assert "Order flow:" in trade_dashboard
+    assert "Economic event:" in trade_dashboard
     assert "EVENT APPROACHING — CAUTION" in trade_dashboard or "PRE-RELEASE SAFETY" in trade_dashboard or "RELEASE IMPULSE" in trade_dashboard or "EVENT OPPORTUNITY WINDOW" in trade_dashboard or "NO EVENT RESTRICTION" in trade_dashboard
     assert "Plan control:" in trade_dashboard and "Next action:" in trade_dashboard
     assert "LONG PLAN" in trade_dashboard and "SHORT PLAN" in trade_dashboard

@@ -865,6 +865,7 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
             "side": side, "distance": distance, "in_zone": in_zone,
             "volume_ok": volume_ok, "flow_support": flow_support,
             "momentum_support": momentum_support, "candle_ok": candle_ok, "trigger": trigger,
+            "directional_support": sum((momentum_support, candle_ok, flow_support)),
             "compressed": float(getattr(analysis, "bollinger_width", 99.0)) < 3.0,
         }
 
@@ -873,7 +874,15 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
     armed_sides = list(get_armed_trade_plans().get(signal.symbol, {}))
     long_rows, long_focus = plan("LONG", long_level, long_interval, long_analysis)
     short_rows, short_focus = plan("SHORT", short_level, short_interval, short_analysis)
-    focus = min((long_focus, short_focus), key=lambda item: item["distance"])
+    ranked_focus = sorted(
+        (long_focus, short_focus),
+        key=lambda item: (-item["directional_support"], item["distance"]),
+    )
+    focus, alternative = ranked_focus
+    focus_is_clear = (
+        focus["directional_support"] >= 2
+        and focus["directional_support"] > alternative["directional_support"]
+    )
     focus_side = focus["side"]
     focus_armed = focus_side in armed_sides
     readiness_checks = (
@@ -886,6 +895,8 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
         next_action = "Observe the first move. Do not chase; wait for the event opportunity window and a close/retest."
     elif economic.block_new_entries:
         next_action = "Keep both plans armed. Standard entries are paused until release; then wait for the impulse to settle."
+    elif not focus_is_clear:
+        next_action = "Directional evidence conflicts or is incomplete. Keep both plans armed and wait for one side to gain at least two confirming clues."
     elif not focus["in_zone"]:
         next_action = f"Let price reach the {focus_side} zone; do not chase it."
     elif not focus["volume_ok"] or not focus["flow_support"]:
@@ -912,19 +923,30 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
     else:
         economic_summary = "NO EVENT RESTRICTION"
         economic_check = f"🟢 {economic_summary} — entries allowed"
-    focus_lines = [
-        f"🎯 FOCUS: {focus_side} — {focus_proximity}",
-        f"Entry readiness: {readiness_icon} {readiness_passed}/{len(readiness_checks)} checks passed",
-        f"Price at zone: {'🟢 YES' if focus['in_zone'] else '🟡 NOT YET'}",
-        f"Momentum: {'🟢 SUPPORTIVE' if focus['momentum_support'] else '🟡 WAITING FOR TURN'}",
-        f"Reversal candle: {'🟢 CONFIRMED' if focus['candle_ok'] else '🟡 WAITING'}",
-        f"Volume: {'🟢 PASSED' if focus['volume_ok'] else '🟡 MISSING'}",
-        f"Order flow: {'🟢 SUPPORTIVE' if focus['flow_support'] else '🔴 OPPOSING / UNCONFIRMED'}",
-        f"Economic event: {economic_check}",
-        f"Plan control: {'🟢 ARMED' if focus_armed else f'⚪ NOT ARMED — tap Arm {focus_side.title()} to monitor it'}",
-    ]
-    if focus["compressed"]:
-        focus_lines.append("Breakout risk: 🔵 COMPRESSION — require a close/retest; the level can break instead of reverse.")
+    if focus_is_clear:
+        focus_lines = [
+            f"🎯 FOCUS: {focus_side} WATCH — {focus_proximity}",
+            f"Directional agreement: 🟢 {focus['directional_support']}/3 clues support {focus_side}",
+            f"Entry readiness: {readiness_icon} {readiness_passed}/{len(readiness_checks)} checks passed",
+            f"Price at zone: {'🟢 YES' if focus['in_zone'] else '🟡 NOT YET'}",
+            f"Momentum: {'🟢 SUPPORTIVE' if focus['momentum_support'] else '🟡 WAITING FOR TURN'}",
+            f"Reversal candle: {'🟢 CONFIRMED' if focus['candle_ok'] else '🟡 WAITING'}",
+            f"Volume: {'🟢 PASSED' if focus['volume_ok'] else '🟡 MISSING'}",
+            f"Order flow: {'🟢 SUPPORTIVE' if focus['flow_support'] else '🔴 OPPOSING / UNCONFIRMED'}",
+            f"Economic event: {economic_check}",
+            f"Plan control: {'🟢 ARMED' if focus_armed else f'⚪ NOT ARMED — tap Arm {focus_side.title()} to monitor it'}",
+        ]
+        if focus["compressed"]:
+            focus_lines.append("Breakout risk: 🔵 COMPRESSION — require a close/retest; the level can break instead of reverse.")
+    else:
+        focus_lines = [
+            "🎯 FOCUS: NO CLEAR DIRECTION — WAIT",
+            f"🟢 Long evidence: {long_focus['directional_support']}/3 directional clues; zone {long_focus['distance']:.2f}% away",
+            f"🔴 Short evidence: {short_focus['directional_support']}/3 directional clues; zone {short_focus['distance']:.2f}% away",
+            "Decision: Proximity alone cannot select a trade. Momentum, reversal candle and order flow must establish one preferred side.",
+            f"Economic event: {economic_check}",
+            "Plan control: Keep LONG and SHORT armed until one direction becomes dominant.",
+        ]
     focus_lines.append(f"Next action: {next_action}")
     lines = [
         f"🎯 {signal.symbol} TRADE PLANNER",
