@@ -13,6 +13,7 @@ from economic_calendar import build_calendar_message, get_economic_risk, get_pro
 from news_intelligence import build_news_message
 from lunar_context import get_lunar_context
 from market_context import build_market_context, calculate_coinbase_premium
+import notifier as notifier_module
 from notifier import (
     build_active_setups_message,
     build_balanced_evidence,
@@ -284,14 +285,23 @@ def main() -> None:
     )
     assert approach_alert.alert_type == "ARMED_PLAN_APPROACHING"
     assert "Advance warning only" in approach_alert.message
+    signal.analyses["15m"].candle_patterns = ["Bullish hammer"]
+    signal.analyses["15m"].chart_structures = []
+    signal.analyses["15m"].divergences = []
+    original_economic_risk = notifier_module.get_economic_risk
+    notifier_module.get_economic_risk = lambda: SimpleNamespace(block_new_entries=False)
     signal.price = (armed_long["zone_low"] + armed_long["zone_high"]) / 2.0
     armed_alert = evaluate_armed_trade_plan_alert(
         signal,
         {"taker_flow_imbalance": 25.0, "large_flow_imbalance": 40.0},
     )
-    assert armed_alert.alert_type in {"ARMED_PLAN_READY", "ARMED_PLAN_ZONE"}
-    if armed_alert.alert_type == "ARMED_PLAN_ZONE":
-        assert "Zone behavior: 🟢 REVERSAL TEST" in armed_alert.message
+    notifier_module.get_economic_risk = original_economic_risk
+    assert armed_alert.alert_type == "ARMED_PLAN_READY"
+    assert "Setup quality:" in armed_alert.message
+    assert "Conservative leverage ceiling:" in armed_alert.message
+    assert "WHY THIS QUALIFIED" in armed_alert.message
+    setup_states.pop(signal.symbol, None)
+    remove_active_setup(signal.symbol)
     remove_armed_trade_plans(signal.symbol)
     signal.price = 100.5
     signal.analyses = {}

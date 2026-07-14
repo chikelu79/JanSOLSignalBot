@@ -8,13 +8,13 @@ from typing import Any
 
 from bot_state import (
     get_active_setups, get_alert_history, get_armed_trade_plans, get_early_opportunities, get_early_opportunity_outcomes, get_risk_style, get_signal_performance, get_trading_horizon, is_auto_plan_enabled,
-    record_alert_time, record_early_opportunity_outcome, record_signal_performance, remove_active_setup, remove_early_opportunity, set_active_setup, set_armed_trade_plans, set_early_opportunity, update_signal_performance,
+    record_alert_time, record_early_opportunity_outcome, record_signal_performance, remove_active_setup, remove_armed_trade_plans, remove_early_opportunity, set_active_setup, set_armed_trade_plans, set_early_opportunity, update_signal_performance,
 )
 from economic_calendar import format_event_time, get_profile_economic_risk as get_economic_risk
 from lunar_context import get_lunar_context
 from session_context import get_session_context, get_special_market_event
 from strategy import MarketSignal, TradePlan, get_readiness_label, get_signal_grade
-from trading_profile import get_profile, mfi_reversal_min_change
+from trading_profile import estimate_position, get_profile, mfi_reversal_min_change
 
 WATCH_COOLDOWN_SECONDS = 20 * 60
 PREPARE_COOLDOWN_SECONDS = 10 * 60
@@ -715,6 +715,25 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
             plan["signal_id"] = record_entry_signal("ARMED", signal.symbol, side, plan, str(plan["interval"]))
             midpoint = (zone_low + zone_high) / 2.0
             risk = abs(midpoint - float(plan["stop"]))
+            risk_percent = risk / max(midpoint, 1e-9) * 100.0
+            momentum_quality = min(100.0, abs(float(analysis.score)) / max(profile.watch_threshold, 1.0) * 100.0)
+            volume_quality = min(100.0, float(analysis.relative_volume) / max(profile.volume_confirmation, 0.01) * 100.0)
+            flow_quality = min(100.0, max(abs(taker) / 15.0, abs(large) / 30.0) * 100.0)
+            setup_quality = round(momentum_quality * 0.35 + volume_quality * 0.25 + flow_quality * 0.25 + 15.0)
+            quality_label = "STRONG" if setup_quality >= 84 else "CONFIRMED" if setup_quality >= 74 else "QUALIFIED"
+            leverage_estimate = estimate_position(side, midpoint, 100.0, 1.0, float(plan["stop"]))
+            horizon_cap = {"SCALPING": 20.0, "DAY": 10.0, "SWING": 5.0}.get(profile.horizon, 10.0)
+            style_factor = {"CONSERVATIVE": 0.50, "BALANCED": 0.75, "AGGRESSIVE": 1.0}.get(profile.risk_style, 0.75)
+            profile_leverage_cap = max(1.0, horizon_cap * style_factor)
+            recommended_leverage = min(float(leverage_estimate["recommended_max_leverage"]), profile_leverage_cap)
+            reasons = [
+                f"{plan['interval']} momentum score is {float(analysis.score):+.0f}",
+                f"Volume is {analysis.relative_volume:.2f}× versus {profile.volume_confirmation:.2f}× required",
+                f"Order flow agrees: taker {taker:+.1f}%, large trades {large:+.1f}%",
+                f"Reversal candle confirmed on {plan['interval']}",
+            ]
+            if bool(plan.get("event_plan", False)):
+                reasons.append("Levels were rebuilt from post-event price structure")
             managed_plan = TradePlan(
                 side=side, entry_low=zone_low, entry_high=zone_high,
                 stop_loss=float(plan["stop"]), invalidation=float(plan["stop"]),
@@ -733,13 +752,19 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
             remove_armed_trade_plans(signal.symbol)
             return AlertDecision(True, "ARMED_PLAN_READY", signal.symbol, "\n".join([
                 f"🚨 {signal.symbol} {side} PLAN CONFIRMATION READY", "",
+                f"Profile: {profile.horizon} / {profile.risk_style}",
+                f"Setup quality: {setup_quality}% — {quality_label}",
                 f"Price: {price_text(signal.price)}", f"Entry zone: {price_text(zone_low)} to {price_text(zone_high)}",
-                f"Stop: {price_text(plan['stop'])}", f"TP1: {price_text(plan['tp1'])}",
-                f"TP2: {price_text(plan['tp2'])}", f"TP3: {price_text(plan['tp3'])}",
+                f"Stop: {price_text(plan['stop'])} ({risk_percent:.2f}% from entry midpoint)",
+                f"TP1: {price_text(plan['tp1'])} (1.25R)",
+                f"TP2: {price_text(plan['tp2'])} (2.00R)",
+                f"TP3: {price_text(plan['tp3'])} (3.00R)",
+                f"Conservative leverage ceiling: {recommended_leverage:.0f}× for this profile and stop distance",
                 f"Volume: {analysis.relative_volume:.2f}× | Taker: {taker:+.1f}% | Large: {large:+.1f}%",
                 "Reversal candle: 🟢 CONFIRMED",
                 f"Entry checklist: 🟢 {passed_checks}/6 checks passed",
-                "", "Confirm the reversal candle and actual execution price before acting.",
+                "", "WHY THIS QUALIFIED", *[f"• {reason}" for reason in reasons],
+                "", "Confirm the actual execution price and use the visual risk form before choosing margin. The leverage ceiling is an estimate, not a recommendation to maximize leverage.",
             ]), f"Armed {side.lower()} plan reached confirmation")
         if inside and not bool(plan.get("zone_alerted", False)):
             plan["zone_alerted"] = True
