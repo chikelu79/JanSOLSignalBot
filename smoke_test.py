@@ -249,6 +249,17 @@ def main() -> None:
     assert "ETH Coinbase Premium: -0.135% — US SELLING" in message
     assert "ETH dominance: 17.50%" in message
     assert "ETH vs BTC momentum (12h):" in message
+    weak_eth_macro = build_market_context(
+        signal,
+        {
+            "global_crypto": {
+                "btc_dominance": 56.0,
+                "eth_dominance": 10.0,
+                "market_change_24h": 0.0,
+            }
+        },
+    )
+    assert "Weak ETH dominance signals limited broad altcoin participation." in weak_eth_macro.macro_reasons
     assert "Funding: +0.0600%" in message
     assert "Derivatives source: Offline test" in message
     assert "OI change: +1.20% (5m), +6.50% (1h)" in message

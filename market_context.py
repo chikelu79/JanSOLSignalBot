@@ -1587,6 +1587,7 @@ def calculate_macro_bias(
     eth_score: float,
     btc_correlation: float,
     btc_dominance: float,
+    eth_dominance: float,
     market_change_24h: float,
     vix_value: float,
     fear_greed_value: float,
@@ -1662,6 +1663,13 @@ def calculate_macro_bias(
         reasons.append(
             "Lower BTC dominance may favor altcoins."
         )
+
+    if eth_dominance >= 18.0:
+        macro_score += 2.0
+        reasons.append("Strong ETH dominance supports broad altcoin participation.")
+    elif 0.0 < eth_dominance <= 14.0:
+        macro_score -= 2.0
+        reasons.append("Weak ETH dominance signals limited broad altcoin participation.")
 
     if vix_value >= 30.0:
         macro_score -= 6.0
@@ -2082,6 +2090,7 @@ def build_market_context(
         eth_score=eth_score,
         btc_correlation=correlation,
         btc_dominance=btc_dominance,
+        eth_dominance=eth_dominance,
         market_change_24h=market_change,
         vix_value=vix_value,
         fear_greed_value=fear_greed_value,
