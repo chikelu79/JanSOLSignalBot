@@ -231,6 +231,7 @@ def main() -> None:
     assert "Price at zone:" in trade_dashboard
     assert "Momentum:" in trade_dashboard and "Volume:" in trade_dashboard
     assert "Order flow:" in trade_dashboard and "Economic event:" in trade_dashboard
+    assert "EVENT APPROACHING — CAUTION" in trade_dashboard or "EVENT BLACKOUT — DO NOT OPEN A NEW TRADE" in trade_dashboard or "NO EVENT RESTRICTION" in trade_dashboard
     assert "Plan control:" in trade_dashboard and "Next action:" in trade_dashboard
     assert "LONG PLAN" in trade_dashboard and "SHORT PLAN" in trade_dashboard
     assert "KEY LEVEL MAP" in trade_dashboard

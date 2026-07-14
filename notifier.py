@@ -825,13 +825,22 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
     else:
         next_action = f"Require the {focus['trigger']} and wait for the confirmed-entry alert."
     focus_proximity = "IN ZONE" if focus["in_zone"] else f"{focus['distance']:.2f}% AWAY"
+    if economic.block_new_entries:
+        economic_summary = "EVENT BLACKOUT — DO NOT OPEN A NEW TRADE"
+        economic_check = f"🔴 {economic_summary}"
+    elif economic.status not in {"CLEAR", "NONE"}:
+        economic_summary = "EVENT APPROACHING — CAUTION"
+        economic_check = f"🟡 {economic_summary}; entries allowed for now"
+    else:
+        economic_summary = "NO EVENT RESTRICTION"
+        economic_check = f"🟢 {economic_summary} — entries allowed"
     focus_lines = [
         f"🎯 FOCUS: {focus_side} — {focus_proximity}",
         f"Price at zone: {'🟢 YES' if focus['in_zone'] else '🟡 NOT YET'}",
         f"Momentum: {'🟢 SUPPORTIVE' if focus['momentum_support'] else '🟡 WAITING FOR TURN'}",
         f"Volume: {'🟢 PASSED' if focus['volume_ok'] else '🟡 MISSING'}",
         f"Order flow: {'🟢 SUPPORTIVE' if focus['flow_support'] else '🔴 OPPOSING / UNCONFIRMED'}",
-        f"Economic event: {'🔴 BLOCKED' if economic.block_new_entries else '🟢 CLEAR'}",
+        f"Economic event: {economic_check}",
         f"Plan control: {'🟢 ARMED' if focus_armed else f'⚪ NOT ARMED — tap Arm {focus_side.title()} to monitor it'}",
     ]
     if focus["compressed"]:
@@ -843,7 +852,7 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
         "",
         f"Current price: {price_text(price)}",
         f"Decision bias: {bias} ({score:+.1f}; directional at ±{profile.watch_threshold:.0f})",
-        f"Economic risk: {economic.status}",
+        f"Economic risk: {economic_summary}",
         f"Armed plans: {', '.join(armed_sides) if armed_sides else 'NONE'}",
         "",
         *focus_lines,
