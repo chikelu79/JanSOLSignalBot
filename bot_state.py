@@ -20,6 +20,8 @@ STATE_FILE = Path("bot_state.json")
 DEFAULT_STATE: dict[str, Any] = {
     "selected_pair": "SOLUSDT",
     "monitor_enabled": True,
+    "auto_plan_enabled": False,
+    "auto_plan_fingerprints": {},
     "runtime_chat_id": "",
     "watchlist": [
         "SOLUSDT",
@@ -31,6 +33,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "early_opportunity_outcomes": [],
     "armed_trade_plans": {},
     "signal_performance": [],
+    "alert_history": {},
     "trading_horizon": "DAY",
     "risk_style": "BALANCED",
 }
@@ -118,6 +121,13 @@ def validate_state(
             True,
         )
     )
+    validated["auto_plan_enabled"] = bool(state.get("auto_plan_enabled", False))
+    fingerprints = state.get("auto_plan_fingerprints", {})
+    validated["auto_plan_fingerprints"] = {
+        normalize_symbol(str(symbol)): str(value)
+        for symbol, value in fingerprints.items()
+        if isinstance(fingerprints, dict) and str(value)
+    } if isinstance(fingerprints, dict) else {}
 
     validated["runtime_chat_id"] = str(
         state.get(
@@ -304,6 +314,13 @@ def validate_state(
                 continue
     validated["signal_performance"] = validated_performance
 
+    history = state.get("alert_history", {})
+    validated["alert_history"] = {
+        str(key)[:240]: float(value)
+        for key, value in history.items()
+        if isinstance(history, dict) and isinstance(value, (int, float))
+    } if isinstance(history, dict) else {}
+
     return validated
 
 
@@ -423,6 +440,31 @@ def set_monitor_enabled(
     return bool(
         STATE["monitor_enabled"]
     )
+
+
+def is_auto_plan_enabled() -> bool:
+    return bool(STATE.get("auto_plan_enabled", False))
+
+
+def set_auto_plan_enabled(enabled: bool) -> bool:
+    STATE["auto_plan_enabled"] = bool(enabled)
+    save_state(STATE)
+    return bool(STATE["auto_plan_enabled"])
+
+
+def get_auto_plan_fingerprint(symbol: str) -> str:
+    return str(STATE.get("auto_plan_fingerprints", {}).get(normalize_symbol(symbol), ""))
+
+
+def set_auto_plan_fingerprint(symbol: str, fingerprint: str) -> None:
+    values = dict(STATE.get("auto_plan_fingerprints", {}))
+    normalized = normalize_symbol(symbol)
+    if fingerprint:
+        values[normalized] = str(fingerprint)
+    else:
+        values.pop(normalized, None)
+    STATE["auto_plan_fingerprints"] = values
+    save_state(STATE)
 
 
 # =========================================================
@@ -683,4 +725,17 @@ def update_signal_performance(signal_id: str, **changes: Any) -> None:
             item.update(changes)
             break
     STATE["signal_performance"] = records[-500:]
+    save_state(STATE)
+
+
+def get_alert_history() -> dict[str, float]:
+    return {str(key): float(value) for key, value in STATE.get("alert_history", {}).items()}
+
+
+def record_alert_time(key: str, timestamp: float) -> None:
+    history = dict(STATE.get("alert_history", {}))
+    history[str(key)[:240]] = float(timestamp)
+    if len(history) > 500:
+        history = dict(sorted(history.items(), key=lambda item: item[1], reverse=True)[:500])
+    STATE["alert_history"] = history
     save_state(STATE)

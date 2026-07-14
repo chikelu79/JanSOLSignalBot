@@ -1,5 +1,8 @@
 """Offline structural smoke test. It does not contact Binance or Telegram."""
 
+import os
+os.environ["JANBOT_DISABLE_PERSISTENT_ALERTS"] = "1"
+
 from dataclasses import asdict
 from datetime import datetime
 from types import SimpleNamespace
@@ -26,6 +29,7 @@ from notifier import (
     evaluate_economic_alert,
     evaluate_session_alert,
     evaluate_signal_alert,
+    reversal_candle_confirmed,
     setup_states,
 )
 from trading_profile import get_profile, mfi_reversal_min_change
@@ -229,6 +233,10 @@ def main() -> None:
         SimpleNamespace(adjusted_score=10.0, taker_flow_imbalance=20.0, large_flow_imbalance=35.0),
     )
     assert "TRADE PLANNER" in trade_dashboard
+    assert "Automatic planning:" in trade_dashboard
+    assert reversal_candle_confirmed(SimpleNamespace(candle_patterns=["Bullish hammer"], chart_structures=[]), "LONG")
+    assert reversal_candle_confirmed(SimpleNamespace(candle_patterns=["Bearish engulfing"], chart_structures=[]), "SHORT")
+    assert not reversal_candle_confirmed(SimpleNamespace(candle_patterns=["Doji"], chart_structures=[]), "LONG")
     assert "🎯 FOCUS:" in trade_dashboard
     assert "Price at zone:" in trade_dashboard
     assert "Momentum:" in trade_dashboard and "Volume:" in trade_dashboard

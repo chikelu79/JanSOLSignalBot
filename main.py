@@ -24,6 +24,8 @@ from news_intelligence import build_news_message, fetch_news_intelligence
 from bot_state import (
     add_to_watchlist,
     get_runtime_chat_id,
+    get_active_setups,
+    get_auto_plan_fingerprint,
     get_armed_trade_plans,
     get_risk_style,
     get_selected_pair,
@@ -31,9 +33,12 @@ from bot_state import (
     get_watchlist,
     get_trading_horizon,
     is_monitor_enabled,
+    is_auto_plan_enabled,
     remove_from_watchlist,
     remove_armed_trade_plans,
     set_monitor_enabled,
+    set_auto_plan_enabled,
+    set_auto_plan_fingerprint,
     set_armed_trade_plans,
     set_runtime_chat_id,
     set_trading_profile,
@@ -704,6 +709,7 @@ async def analysis_command(
 
 
 def build_trade_keyboard() -> InlineKeyboardMarkup:
+    auto_label = "🤖 Auto plan: ON" if is_auto_plan_enabled() else "🤖 Auto plan: OFF"
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🔄 Refresh", callback_data="trade:refresh"),
@@ -721,7 +727,40 @@ def build_trade_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🎛 Profile", callback_data="trade:profile"),
             InlineKeyboardButton("🧮 Risk form", callback_data="trade:risk"),
         ],
+        [InlineKeyboardButton(auto_label, callback_data="trade:autoplan")],
     ])
+
+
+def arm_plan_records(signal: MarketSignal, sides: tuple[str, ...]) -> dict[str, Any]:
+    generated = create_structural_trade_plans(signal)
+    expiry = {"SCALPING": 2 * 60 * 60, "DAY": 24 * 60 * 60, "SWING": 7 * 24 * 60 * 60}[get_trading_horizon()]
+    now = time.time()
+    return {
+        side: {
+            **generated[side], "created_at": now, "expires_at": now + expiry,
+            "zone_alerted": False, "ready_alerted": False,
+        }
+        for side in sides if side in generated
+    }
+
+
+def auto_plan_fingerprint(plans: dict[str, Any]) -> str:
+    return "|".join(
+        f"{side}:{plan['interval']}:{float(plan['zone_low']):.4f}:{float(plan['zone_high']):.4f}:{float(plan['stop']):.4f}"
+        for side, plan in sorted(plans.items())
+    )
+
+
+def maybe_auto_arm_plans(signal: MarketSignal) -> bool:
+    if not is_auto_plan_enabled() or get_active_setups().get(signal.symbol) or get_armed_trade_plans().get(signal.symbol):
+        return False
+    plans = arm_plan_records(signal, ("LONG", "SHORT"))
+    fingerprint = auto_plan_fingerprint(plans)
+    if not plans or fingerprint == get_auto_plan_fingerprint(signal.symbol):
+        return False
+    set_armed_trade_plans(signal.symbol, plans)
+    set_auto_plan_fingerprint(signal.symbol, fingerprint)
+    return True
 
 
 async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -768,21 +807,25 @@ async def trade_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         symbol = get_selected_pair()
         remove_armed_trade_plans(symbol)
         await query.message.reply_text(f"✖ {symbol} trade plans disarmed.")
+    elif action == "autoplan":
+        enabled = set_auto_plan_enabled(not is_auto_plan_enabled())
+        if enabled:
+            symbol = get_selected_pair()
+            set_auto_plan_fingerprint(symbol, "")
+            signal, _, _ = await analyze_symbol(symbol, include_context=False)
+            armed = maybe_auto_arm_plans(signal)
+            await query.message.reply_text(
+                f"🤖 Automatic planning is ON. {'LONG and SHORT plans are now armed.' if armed else 'The monitor will arm the next new structural levels.'}"
+            )
+        else:
+            await query.message.reply_text("🤖 Automatic planning is OFF. Existing armed plans remain active until disarmed, completed or expired.")
     elif action.startswith("arm:"):
         selection = action.split(":", 1)[1]
         symbol = get_selected_pair()
         signal, _, _ = await analyze_symbol(symbol, include_context=False)
-        generated = create_structural_trade_plans(signal)
         selected_sides = ("LONG", "SHORT") if selection == "BOTH" else (selection,)
-        expiry = {"SCALPING": 2 * 60 * 60, "DAY": 24 * 60 * 60, "SWING": 7 * 24 * 60 * 60}[get_trading_horizon()]
-        now = time.time()
         armed = get_armed_trade_plans().get(symbol, {})
-        for side in selected_sides:
-            if side in generated:
-                armed[side] = {
-                    **generated[side], "created_at": now, "expires_at": now + expiry,
-                    "zone_alerted": False, "ready_alerted": False,
-                }
+        armed.update(arm_plan_records(signal, selected_sides))
         set_armed_trade_plans(symbol, armed)
         await query.message.reply_text(
             f"✅ {symbol} {' and '.join(selected_sides)} plan{'s' if len(selected_sides) > 1 else ''} armed.\n"
@@ -1641,6 +1684,7 @@ async def monitor_one_symbol(
                 macro_context,
                 derivatives_data,
             )
+            maybe_auto_arm_plans(signal)
             armed_decision = evaluate_armed_trade_plan_alert(signal, derivatives_data)
             alert_decisions = (
                 (armed_decision, derivatives_decision)

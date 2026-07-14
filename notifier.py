@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
 from bot_state import (
-    get_active_setups, get_armed_trade_plans, get_early_opportunities, get_early_opportunity_outcomes, get_risk_style, get_signal_performance, get_trading_horizon,
-    record_early_opportunity_outcome, record_signal_performance, remove_active_setup, remove_early_opportunity, set_active_setup, set_armed_trade_plans, set_early_opportunity, update_signal_performance,
+    get_active_setups, get_alert_history, get_armed_trade_plans, get_early_opportunities, get_early_opportunity_outcomes, get_risk_style, get_signal_performance, get_trading_horizon, is_auto_plan_enabled,
+    record_alert_time, record_early_opportunity_outcome, record_signal_performance, remove_active_setup, remove_early_opportunity, set_active_setup, set_armed_trade_plans, set_early_opportunity, update_signal_performance,
 )
 from economic_calendar import format_event_time, get_economic_risk
 from lunar_context import get_lunar_context
@@ -34,6 +35,7 @@ last_alert_times: dict[str, float] = {}
 last_signal_hashes: dict[str, str] = {}
 previous_scores: dict[str, float] = {}
 seen_news_ids: set[str] = set()
+PERSIST_ALERT_HISTORY = os.getenv("JANBOT_DISABLE_PERSISTENT_ALERTS", "0") != "1"
 
 
 def _load_setup_states() -> dict[str, dict[str, Any]]:
@@ -78,6 +80,19 @@ def valid_number(value: Any) -> bool:
         return number == number
     except (TypeError, ValueError):
         return False
+
+
+def reversal_candle_confirmed(analysis: Any, side: str) -> bool:
+    clues = " ".join(
+        str(value).lower() for value in (
+            list(getattr(analysis, "candle_patterns", []))
+            + list(getattr(analysis, "chart_structures", []))
+        )
+    )
+    bullish = ("bullish engulfing", "hammer", "morning star", "three white soldiers", "double bottom")
+    bearish = ("bearish engulfing", "shooting star", "evening star", "three black crows", "double top")
+    keywords = bullish if side == "LONG" else bearish
+    return any(keyword in clues for keyword in keywords)
 
 
 def price_text(value: Any) -> str:
@@ -127,11 +142,16 @@ def make_alert_key(symbol: str, alert_type: str, side: str = "") -> str:
 
 
 def alert_allowed(key: str, cooldown_seconds: int) -> bool:
-    return time.time() - last_alert_times.get(key, 0.0) >= cooldown_seconds
+    persisted = get_alert_history().get(key, 0.0) if PERSIST_ALERT_HISTORY else 0.0
+    last_sent = max(last_alert_times.get(key, 0.0), persisted)
+    return time.time() - last_sent >= cooldown_seconds
 
 
 def mark_alert_sent(key: str) -> None:
-    last_alert_times[key] = time.time()
+    sent_at = time.time()
+    last_alert_times[key] = sent_at
+    if PERSIST_ALERT_HISTORY:
+        record_alert_time(key, sent_at)
 
 
 def signal_hash(signal: MarketSignal) -> str:
@@ -410,7 +430,8 @@ def evaluate_early_opportunity_alert(
         proactive_ready = analysis.relative_volume >= required_volume and flow_confirmed
         if distance <= 1.0 and proactive_ready:
             watch_candidates.append((distance, opportunity_key, opportunity))
-        if not active and inside and analysis.relative_volume >= required_volume and flow_confirmed:
+        candle_ok = reversal_candle_confirmed(analysis, side)
+        if not active and inside and analysis.relative_volume >= required_volume and flow_confirmed and candle_ok:
             economic = get_economic_risk()
             if economic.block_new_entries:
                 continue
@@ -663,19 +684,37 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
         volume_ok = analysis.relative_volume >= profile.volume_confirmation
         flow_ok = (side == "LONG" and (taker >= 15 or large >= 30)) or (side == "SHORT" and (taker <= -15 or large <= -30))
         momentum_ok = analysis.score >= 20 if side == "LONG" else analysis.score <= -20
+        candle_ok = reversal_candle_confirmed(analysis, side)
         event_block = get_economic_risk().block_new_entries
-        ready = inside and volume_ok and flow_ok and momentum_ok and not event_block
+        ready = inside and volume_ok and flow_ok and momentum_ok and candle_ok and not event_block
         if ready and not bool(plan.get("ready_alerted", False)):
             plan["ready_alerted"] = True
             plan["signal_id"] = record_entry_signal("ARMED", signal.symbol, side, plan, str(plan["interval"]))
-            plans[side] = plan
-            set_armed_trade_plans(signal.symbol, plans)
+            midpoint = (zone_low + zone_high) / 2.0
+            risk = abs(midpoint - float(plan["stop"]))
+            managed_plan = TradePlan(
+                side=side, entry_low=zone_low, entry_high=zone_high,
+                stop_loss=float(plan["stop"]), invalidation=float(plan["stop"]),
+                tp1=float(plan["tp1"]), tp2=float(plan["tp2"]), tp3=float(plan["tp3"]),
+                risk_per_unit=risk, reward_risk_tp1=1.25,
+                reward_risk_tp2=2.0, reward_risk_tp3=3.0,
+            )
+            setup_states[signal.symbol] = {
+                "side": side, "plan": managed_plan, "created_at": now,
+                "tp1": False, "tp2": False, "breakeven": False,
+                "management_stop": managed_plan.stop_loss, "exit_warning": False,
+                "tactical": True, "origin_interval": str(plan["interval"]),
+                "signal_id": plan["signal_id"],
+            }
+            _persist_setup(signal.symbol, setup_states[signal.symbol])
+            remove_armed_trade_plans(signal.symbol)
             return AlertDecision(True, "ARMED_PLAN_READY", signal.symbol, "\n".join([
                 f"🚨 {signal.symbol} {side} PLAN CONFIRMATION READY", "",
                 f"Price: {price_text(signal.price)}", f"Entry zone: {price_text(zone_low)} to {price_text(zone_high)}",
                 f"Stop: {price_text(plan['stop'])}", f"TP1: {price_text(plan['tp1'])}",
                 f"TP2: {price_text(plan['tp2'])}", f"TP3: {price_text(plan['tp3'])}",
                 f"Volume: {analysis.relative_volume:.2f}× | Taker: {taker:+.1f}% | Large: {large:+.1f}%",
+                "Reversal candle: 🟢 CONFIRMED",
                 "", "Confirm the reversal candle and actual execution price before acting.",
             ]), f"Armed {side.lower()} plan reached confirmation")
         if inside and not bool(plan.get("zone_alerted", False)):
@@ -688,6 +727,7 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
                 f"Price: {price_text(signal.price)}", f"Zone: {price_text(zone_low)} to {price_text(zone_high)}",
                 f"Volume: {analysis.relative_volume:.2f}× ({'passed' if volume_ok else 'missing'})",
                 f"Taker: {taker:+.1f}% | Large: {large:+.1f}%", f"Invalidation: {price_text(plan['stop'])}",
+                f"Reversal candle: {'🟢 CONFIRMED' if candle_ok else '🟡 WAITING'}",
                 "", "Wait for the required reversal and confirmation; entering the zone alone is not an entry.",
             ]), f"Armed {side.lower()} plan entered zone")
     return AlertDecision(False, "NONE", signal.symbol, "", "Armed plans are waiting for price")
@@ -868,6 +908,7 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
         f"Decision bias: {bias} ({score:+.1f}; directional at ±{profile.watch_threshold:.0f})",
         f"Economic risk: {economic_summary}",
         f"Armed plans: {', '.join(armed_sides) if armed_sides else 'NONE'}",
+        f"Automatic planning: {'ON' if is_auto_plan_enabled() else 'OFF'}",
         "",
         *focus_lines,
         "",
