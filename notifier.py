@@ -257,6 +257,7 @@ def build_early_opportunity_radar(signal: MarketSignal, context: Any | None = No
         relationship = "TREND-ALIGNED" if aligned else "COUNTERTREND" if higher_label != "MIXED" else "MIXED-TREND"
         zone_low = min(analysis.ema20, analysis.vwap)
         zone_high = max(analysis.ema20, analysis.vwap)
+        in_zone = zone_low <= signal.price <= zone_high
         invalidation = analysis.support if side == "LONG" else analysis.resistance
         icon = "🟢" if side == "LONG" else "🔴"
         required_volume = profile.volume_confirmation * (1.15 if relationship == "COUNTERTREND" else 1.0)
@@ -271,8 +272,10 @@ def build_early_opportunity_radar(signal: MarketSignal, context: Any | None = No
         confirmation_ready = volume_ok and (
             taker_support and large_support if relationship == "COUNTERTREND" else supportive_flow
         )
-        if confirmation_ready:
+        if confirmation_ready and in_zone:
             verdict = "🟢 CONFIRMATION READY — price/candle confirmation is still required."
+        elif confirmation_ready:
+            verdict = "🟡 CONDITIONS SUPPORTIVE — price is not confirmed in the zone."
         elif opposing_flow or not volume_ok:
             verdict = "🔴 BLOCKED — volume or order flow does not confirm this opportunity."
         else:
@@ -281,6 +284,8 @@ def build_early_opportunity_radar(signal: MarketSignal, context: Any | None = No
             action = "Wait for a pullback into the decision zone; do not chase above it."
         elif side == "SHORT" and signal.price < zone_low:
             action = "Wait for a bounce into the decision zone; do not chase below it."
+        elif side == "SHORT" and signal.price > zone_high:
+            action = "Price is above the short zone. Require a bearish rejection close back below it; do not short while it remains above."
         elif zone_low <= signal.price <= zone_high:
             action = "Price is in the decision zone; require candle and flow confirmation before treating it as an entry."
         else:
@@ -465,7 +470,15 @@ def evaluate_early_opportunity_alert(
         return AlertDecision(False, "NONE", signal.symbol, "", "Early-opportunity cooldown active")
     mark_alert_sent(key)
     economic = get_economic_risk()
-    event_note = "New entries remain blocked by the economic-event window." if economic.block_new_entries else economic.detail
+    if economic.block_new_entries:
+        event_label = "🔴 EVENT BLACKOUT — DO NOT OPEN A NEW TRADE"
+        event_note = "New entries remain blocked by the economic-event window."
+    elif economic.status not in {"CLEAR", "NONE"}:
+        event_label = "🟡 EVENT APPROACHING — CAUTION"
+        event_note = economic.detail
+    else:
+        event_label = "🟢 NO EVENT RESTRICTION"
+        event_note = economic.detail
     message = "\n".join([
         f"🔔 {signal.symbol} EARLY {side} OPPORTUNITY",
         "",
@@ -473,7 +486,7 @@ def evaluate_early_opportunity_alert(
         f"Distance to decision zone: {distance:.2f}%",
         *block,
         "",
-        f"Economic risk: {economic.status}",
+        f"Economic risk: {event_label}",
         event_note,
         "",
         "This is an early watch, not a confirmed entry. Wait for the displayed price, candle, volume and flow conditions.",
@@ -1522,13 +1535,13 @@ def evaluate_news_alert(data: dict[str, Any]) -> AlertDecision:
     return AlertDecision(False, "NONE", "MARKET", "", "No new relevant market headline")
 
 
-def _large_trade_zone_context(symbol: str, price: float) -> tuple[bool, str, float]:
+def _large_trade_zone_context(symbol: str, price: float) -> tuple[bool, str, float, str]:
     """Return whether exceptional flow is close enough to matter to a planned trade."""
     symbol = symbol.upper()
     if setup_states.get(symbol):
-        return True, "active managed setup", 0.0
+        return True, "active managed setup", 0.0, str(setup_states[symbol].get("side", "")).upper()
 
-    candidates: list[tuple[float, str]] = []
+    candidates: list[tuple[float, str, str]] = []
     for side, plan in get_armed_trade_plans().get(symbol, {}).items():
         try:
             zone_low = float(plan["zone_low"])
@@ -1538,7 +1551,7 @@ def _large_trade_zone_context(symbol: str, price: float) -> tuple[bool, str, flo
         distance = 0.0 if zone_low <= price <= zone_high else min(
             abs(price - zone_low), abs(price - zone_high)
         ) / max(price, 1e-9) * 100.0
-        candidates.append((distance, f"armed {side.upper()} zone"))
+        candidates.append((distance, f"armed {side.upper()} zone", side.upper()))
 
     for opportunity in get_early_opportunities().values():
         if str(opportunity.get("symbol", "")).upper() != symbol:
@@ -1551,13 +1564,14 @@ def _large_trade_zone_context(symbol: str, price: float) -> tuple[bool, str, flo
         distance = 0.0 if zone_low <= price <= zone_high else min(
             abs(price - zone_low), abs(price - zone_high)
         ) / max(price, 1e-9) * 100.0
-        label = f"{opportunity.get('interval', '?')} {opportunity.get('side', '').upper()} radar zone"
-        candidates.append((distance, label))
+        planned_side = str(opportunity.get("side", "")).upper()
+        label = f"{opportunity.get('interval', '?')} {planned_side} radar zone"
+        candidates.append((distance, label, planned_side))
 
     if not candidates:
-        return False, "no active decision zone", float("inf")
-    distance, label = min(candidates)
-    return distance <= 0.50, label, distance
+        return False, "no active decision zone", float("inf"), ""
+    distance, label, planned_side = min(candidates)
+    return distance <= 0.50, label, distance, planned_side
 
 
 def evaluate_derivatives_alert(
@@ -1662,7 +1676,7 @@ def evaluate_derivatives_alert(
         and abs(large_flow_imbalance) >= 60.0
         and largest_trade_multiple >= 10.0
     )
-    zone_relevant, zone_label, zone_distance = _large_trade_zone_context(symbol, signal.price)
+    zone_relevant, zone_label, zone_distance, planned_side = _large_trade_zone_context(symbol, signal.price)
     if concentrated_large_flow and zone_relevant:
         side = "BUY" if large_flow_imbalance > 0 else "SELL"
         key = make_alert_key(symbol, "LARGE_TRADE_FLOW", side)
@@ -1671,10 +1685,14 @@ def evaluate_derivatives_alert(
             proximity = "during an active managed setup" if zone_label == "active managed setup" else (
                 f"while price is {zone_distance:.2f}% from the {zone_label}"
             )
-            action = (
-                f"Unusually concentrated large {side.lower()} trades appeared {proximity}. "
-                "Use this as confirmation for that plan, not a standalone entry; large traders can hedge or reverse."
+            supportive = (side == "BUY" and planned_side == "LONG") or (side == "SELL" and planned_side == "SHORT")
+            relationship = f"SUPPORTS {planned_side}" if supportive else f"OPPOSES {planned_side}"
+            guidance = (
+                "Use it as supporting flow evidence, not a standalone entry."
+                if supportive else
+                "Treat it as a breakout/invalidation warning; do not call it confirmation for the planned trade."
             )
+            action = f"{relationship}: unusually concentrated large {side.lower()} trades appeared {proximity}. {guidance} Large traders can hedge or reverse."
             return AlertDecision(
                 True,
                 "LARGE_TRADE_FLOW",

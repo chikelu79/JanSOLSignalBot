@@ -430,6 +430,14 @@ def main() -> None:
     assert large_trade_alert.alert_type == "LARGE_TRADE_FLOW"
     assert "Largest trade: $200,000.00 BUY — 40.0× average\nLarge-trade net flow:" in large_trade_alert.message
     assert "armed LONG zone" in large_trade_alert.message
+    assert "SUPPORTS LONG" in large_trade_alert.message
+    opposing_large_trade = evaluate_derivatives_alert(signal, {
+        **large_trade_data, "large_flow_imbalance": -75.0,
+        "largest_trade_side": "SELL",
+    })
+    assert opposing_large_trade.alert_type == "LARGE_TRADE_FLOW"
+    assert "OPPOSES LONG" in opposing_large_trade.message
+    assert "breakout/invalidation warning" in opposing_large_trade.message
     remove_armed_trade_plans(signal.symbol)
     assert "Execution status: WATCH" in message
     assert "CONFIDENCE BREAKDOWN" in message
