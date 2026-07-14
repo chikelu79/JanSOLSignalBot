@@ -144,6 +144,13 @@ def main() -> None:
     assert "RSI 6 crossed above RSI 12" in radar[1]
     assert "Stochastic RSI crossed bullish from oversold" in radar[1]
     assert "MFI money flow turned upward" in radar[1]
+    assert any("Verdict: 🟡 DEVELOPING" in line for line in radar)
+    blocked_radar = build_early_opportunity_radar(
+        signal,
+        {"taker_flow_imbalance": -40.0, "large_flow_imbalance": -50.0},
+    )
+    assert any("required ≥ 1.38×" in line for line in blocked_radar)
+    assert any("Verdict: 🔴 BLOCKED" in line for line in blocked_radar)
     signal.price = 75.1
     early_alert = evaluate_early_opportunity_alert(
         signal,

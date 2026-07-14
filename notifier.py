@@ -257,12 +257,24 @@ def build_early_opportunity_radar(signal: MarketSignal, context: Any | None = No
         zone_high = max(analysis.ema20, analysis.vwap)
         invalidation = analysis.support if side == "LONG" else analysis.resistance
         icon = "🟢" if side == "LONG" else "🔴"
-        volume_ok = analysis.relative_volume >= profile.volume_confirmation
+        required_volume = profile.volume_confirmation * (1.15 if relationship == "COUNTERTREND" else 1.0)
+        volume_ok = analysis.relative_volume >= required_volume
         taker_flow = float(context.get("taker_flow_imbalance", 0.0) if isinstance(context, dict) else getattr(context, "taker_flow_imbalance", 0.0))
         large_flow = float(context.get("large_flow_imbalance", 0.0) if isinstance(context, dict) else getattr(context, "large_flow_imbalance", 0.0))
         supportive_flow = (side == "LONG" and (taker_flow >= 15 or large_flow >= 30)) or (side == "SHORT" and (taker_flow <= -15 or large_flow <= -30))
         opposing_flow = (side == "LONG" and (taker_flow <= -15 or large_flow <= -30)) or (side == "SHORT" and (taker_flow >= 15 or large_flow >= 30))
+        taker_support = (side == "LONG" and taker_flow >= 15) or (side == "SHORT" and taker_flow <= -15)
+        large_support = (side == "LONG" and large_flow >= 30) or (side == "SHORT" and large_flow <= -30)
         flow_status = "🟢 SUPPORTIVE" if supportive_flow else "🔴 OPPOSING" if opposing_flow else "🟡 BALANCED"
+        confirmation_ready = volume_ok and (
+            taker_support and large_support if relationship == "COUNTERTREND" else supportive_flow
+        )
+        if confirmation_ready:
+            verdict = "🟢 CONFIRMATION READY — price/candle confirmation is still required."
+        elif opposing_flow or not volume_ok:
+            verdict = "🔴 BLOCKED — volume or order flow does not confirm this opportunity."
+        else:
+            verdict = "🟡 DEVELOPING — confirmation is incomplete."
         if side == "LONG" and signal.price > zone_high:
             action = "Wait for a pullback into the decision zone; do not chase above it."
         elif side == "SHORT" and signal.price < zone_low:
@@ -276,8 +288,9 @@ def build_early_opportunity_radar(signal: MarketSignal, context: Any | None = No
             f"Trigger: {', '.join(triggers)}",
             f"Decision zone: {price_text(zone_low)} to {price_text(zone_high)}; structural invalidation: {price_text(invalidation)}",
             f"Higher-timeframe trend: {higher_label} ({higher_score:+.0f}) — this is not a confirmed entry.",
-            f"Volume confirmation: {'🟢 PASSED' if volume_ok else '🟡 MISSING'} ({analysis.relative_volume:.2f}×; required ≥ {profile.volume_confirmation:.2f}×)",
+            f"Volume confirmation: {'🟢 PASSED' if volume_ok else '🟡 MISSING'} ({analysis.relative_volume:.2f}×; required ≥ {required_volume:.2f}×)",
             f"Order-flow confirmation: {flow_status} (taker {taker_flow:+.1f}%; large trades {large_flow:+.1f}%)",
+            f"Verdict: {verdict}",
             f"Action: {action}",
             "",
         ])
