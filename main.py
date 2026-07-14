@@ -1,13 +1,16 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
 from contextlib import suppress
 from typing import Any
 
-from telegram import BotCommand, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
 )
@@ -1101,8 +1104,15 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except ValueError as error:
             await update.effective_message.reply_text(f"⚠️ {error}")
             return
-    profile = get_profile(get_trading_horizon(), get_risk_style())
     await update.effective_message.reply_text(
+        build_profile_text(),
+        reply_markup=build_profile_keyboard(),
+    )
+
+
+def build_profile_text() -> str:
+    profile = get_profile(get_trading_horizon(), get_risk_style())
+    return (
         "🎛 TRADING PROFILE\n\n"
         f"Horizon: {profile.horizon}\nRisk style: {profile.risk_style}\n\n"
         f"Setup threshold: ±{profile.watch_threshold:.0f}\n"
@@ -1112,7 +1122,47 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"Minimum TP2 reward/risk: {profile.minimum_reward_risk:.2f}R\n"
         f"Primary timeframes: {', '.join(profile.primary_timeframes)}\n"
         f"Confirmation timeframes: {', '.join(profile.confirmation_timeframes)}\n\n"
-        "Change with /profile scalping conservative"
+        "HORIZONS\n"
+        "⚡ Scalping — fastest; emphasizes 5m and 15m\n"
+        "📊 Day — intraday balance; emphasizes 15m, 1h and 4h\n"
+        "🌊 Swing — slower; emphasizes 1h through 1d\n\n"
+        "RISK STYLES\n"
+        "🛡 Conservative — fewer signals, stronger proof and wider protection\n"
+        "⚖️ Balanced — standard confirmation and risk\n"
+        "🔥 Aggressive — earlier signals with lower thresholds and tighter protection\n\n"
+        "Tap one combination below to activate it."
+    )
+
+
+def build_profile_keyboard() -> InlineKeyboardMarkup:
+    horizon_labels = {"SCALPING": "⚡ Scalp", "DAY": "📊 Day", "SWING": "🌊 Swing"}
+    risk_labels = {"CONSERVATIVE": "🛡 Conservative", "BALANCED": "⚖️ Balanced", "AGGRESSIVE": "🔥 Aggressive"}
+    rows: list[list[InlineKeyboardButton]] = []
+    for horizon in ("SCALPING", "DAY", "SWING"):
+        for risk in ("CONSERVATIVE", "BALANCED", "AGGRESSIVE"):
+            rows.append([
+                InlineKeyboardButton(
+                    f"{horizon_labels[horizon]} • {risk_labels[risk]}",
+                    callback_data=f"profile:{horizon}:{risk}",
+                )
+            ])
+    return InlineKeyboardMarkup(rows)
+
+
+async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None:
+        return
+    await query.answer()
+    try:
+        _, horizon, risk_style = str(query.data).split(":", 2)
+        set_trading_profile(horizon, risk_style)
+    except (ValueError, AttributeError):
+        await query.edit_message_text("⚠️ That profile option is invalid. Send /profile to try again.")
+        return
+    await query.edit_message_text(
+        "✅ Profile updated\n\n" + build_profile_text(),
+        reply_markup=build_profile_keyboard(),
     )
 
 
@@ -1803,6 +1853,13 @@ def main() -> None:
         CommandHandler(
             "profile",
             profile_command,
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            profile_callback,
+            pattern=r"^profile:",
         )
     )
 
