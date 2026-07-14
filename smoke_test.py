@@ -238,15 +238,53 @@ def main() -> None:
         "tp1": False,
         "tp2": False,
         "breakeven": False,
+        "management_stop": plan.stop_loss,
+        "exit_warning": False,
     }
     set_active_setup(signal.symbol, persisted_setup)
     assert get_active_setups()[signal.symbol]["plan"]["tp3"] == plan.tp3
     setups_message = build_active_setups_message()
     assert "TESTUSDT — LONG" in setups_message
     assert "TP3: $109.0000" in setups_message
+    assert "Managed protection: $97.0000" in setups_message
     remove_active_setup(signal.symbol)
     assert signal.symbol not in get_active_setups()
     assert "None" in build_active_setups_message()
+    adverse_context = SimpleNamespace(
+        adjusted_score=10.0,
+        funding_rate=0.0006,
+        open_interest_change_1h=6.0,
+        taker_flow_imbalance=-25.0,
+        large_flow_imbalance=-45.0,
+        macro_bias="BEARISH",
+        news_label="NEUTRAL",
+        reasons=[],
+        macro_reasons=[],
+        warnings=[],
+    )
+    setup_states[signal.symbol] = {
+        "side": "LONG", "plan": plan, "created_at": 1.0,
+        "tp1": False, "tp2": False, "breakeven": False,
+        "management_stop": plan.stop_loss, "exit_warning": False,
+    }
+    smart_exit = evaluate_signal_alert(signal, adverse_context)
+    assert smart_exit.alert_type == "EXIT_40"
+    assert "REDUCE 40%" in smart_exit.message
+    remove_active_setup(signal.symbol)
+    setup_states.pop(signal.symbol, None)
+    signal.price = 103.1
+    setup_states[signal.symbol] = {
+        "side": "LONG", "plan": plan, "created_at": 1.0,
+        "tp1": False, "tp2": False, "breakeven": False,
+        "management_stop": plan.stop_loss, "exit_warning": False,
+    }
+    tp1_alert = evaluate_signal_alert(signal, SimpleNamespace(adjusted_score=65.0))
+    assert tp1_alert.alert_type == "TP1"
+    assert "taking 30%" in tp1_alert.message
+    assert setup_states[signal.symbol]["management_stop"] == 99.5
+    remove_active_setup(signal.symbol)
+    setup_states.pop(signal.symbol, None)
+    signal.price = 100.5
     setup_states[signal.symbol] = {
         "side": "LONG",
         "plan": plan,
@@ -254,6 +292,8 @@ def main() -> None:
         "tp1": False,
         "tp2": False,
         "breakeven": False,
+        "management_stop": plan.stop_loss,
+        "exit_warning": False,
     }
     exit_alert = evaluate_derivatives_alert(
         signal,

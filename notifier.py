@@ -411,12 +411,15 @@ def build_active_setups_message() -> str:
             progress.append("TP2 reached")
         if state.get("breakeven"):
             progress.append("breakeven protection prompted")
+        if state.get("exit_warning"):
+            progress.append("40% reduction warning sent")
         lines.extend(
             [
                 "",
                 f"{symbol} — {state.get('side', 'UNKNOWN')}",
                 f"Entry: {price_text(plan.get('entry_low'))} to {price_text(plan.get('entry_high'))}",
                 f"Stop: {price_text(plan.get('stop_loss'))}",
+                f"Managed protection: {price_text(state.get('management_stop', plan.get('stop_loss')))}",
                 f"TP1: {price_text(plan.get('tp1'))}",
                 f"TP2: {price_text(plan.get('tp2'))}",
                 f"TP3: {price_text(plan.get('tp3'))}",
@@ -543,6 +546,8 @@ def build_alert_message(
         "TP2": f"📈 {signal.symbol} TP2 REACHED",
         "TP3": f"🏁 {signal.symbol} TP3 REACHED",
         "INVALIDATED": f"❌ {signal.symbol} SETUP INVALIDATED",
+        "EXIT_40": f"⚠️ {signal.symbol} SMART EXIT — REDUCE 40%",
+        "PROTECTED_STOP": f"🛡 {signal.symbol} PROTECTED STOP REACHED",
         "EXIT": f"🚪 {signal.symbol} EXIT CONDITION",
         "RAPID_CHANGE": f"⚡ {signal.symbol} RAPID MARKET CHANGE",
     }
@@ -561,7 +566,7 @@ def build_alert_message(
     ]
     if note:
         lines.extend(["", f"Action: {note}"])
-    if plan and alert_type not in {"INVALIDATED", "EXIT"}:
+    if plan and alert_type not in {"INVALIDATED", "PROTECTED_STOP", "EXIT"}:
         lines.extend(["", "TRADE MAP", *format_trade_plan(plan)])
     reasons = list(signal.supporting_reasons)
     warnings = list(signal.warnings)
@@ -617,7 +622,6 @@ def build_derivatives_alert_message(
             f"(directional beyond 57.5% / below 42.5%)",
             f"Largest trade: {price_text(derivatives.get('largest_trade_value', 0.0))} "
             f"{derivatives.get('largest_trade_side', 'UNKNOWN')} — "
-            f"{float(derivatives.get('largest_trade_multiple', 0.0)):.1f}× average",
             f"Large-trade net flow: {float(derivatives.get('large_flow_imbalance', 0.0)):+.1f}% "
             f"across {float(derivatives.get('large_flow_share', 0.0)):.1f}% of sampled value",
             f"Provider: {derivatives.get('provider', 'UNKNOWN')}",
@@ -911,47 +915,84 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
         plan = state["plan"]
         side = state["side"]
         price = signal.price
-        if (side == "LONG" and price <= plan.stop_loss) or (side == "SHORT" and price >= plan.stop_loss):
+        management_stop = float(state.get("management_stop", plan.stop_loss))
+        if (side == "LONG" and price <= management_stop) or (side == "SHORT" and price >= management_stop):
             _clear_setup(symbol)
-            return _decision(signal, context, "INVALIDATED", "Stop or invalidation reached", "Exit the setup; the planned invalidation level was reached.", MANAGEMENT_COOLDOWN_SECONDS)
+            alert_type = "PROTECTED_STOP" if state.get("tp1") or state.get("breakeven") else "INVALIDATED"
+            reason = "Protected stop reached" if alert_type == "PROTECTED_STOP" else "Stop or invalidation reached"
+            return _decision(signal, context, alert_type, reason, f"Exit the remaining managed position; protection at {price_text(management_stop)} was reached.", MANAGEMENT_COOLDOWN_SECONDS)
         if side == "LONG":
             if price >= plan.tp3:
                 _clear_setup(symbol)
-                return _decision(signal, context, "TP3", "Final target reached", "Consider closing the remaining position.", MANAGEMENT_COOLDOWN_SECONDS)
+                return _decision(signal, context, "TP3", "Final target reached", "Close the remaining 40% and record the completed setup.", MANAGEMENT_COOLDOWN_SECONDS)
             if price >= plan.tp2 and not state.get("tp2"):
                 state["tp2"] = True
+                state["management_stop"] = plan.tp1
                 _persist_setup(symbol, state)
-                return _decision(signal, context, "TP2", "Second target reached", "Consider scaling out further and trailing the stop.", MANAGEMENT_COOLDOWN_SECONDS)
+                return _decision(signal, context, "TP2", "Second target reached", f"Consider taking another 30% and protecting the remainder near TP1 at {price_text(plan.tp1)}.", MANAGEMENT_COOLDOWN_SECONDS)
             if price >= plan.tp1 and not state.get("tp1"):
                 state["tp1"] = True
+                state["breakeven"] = True
+                state["management_stop"] = (plan.entry_low + plan.entry_high) / 2.0
                 _persist_setup(symbol, state)
-                return _decision(signal, context, "TP1", "First target reached", "Consider partial profit and move protection toward breakeven.", MANAGEMENT_COOLDOWN_SECONDS)
+                return _decision(signal, context, "TP1", "First target reached", f"Consider taking 30% and protecting the remainder near breakeven at {price_text(state['management_stop'])}.", MANAGEMENT_COOLDOWN_SECONDS)
             if price >= plan.entry_high + plan.risk_per_unit * 0.75 and not state.get("breakeven"):
                 state["breakeven"] = True
+                state["management_stop"] = (plan.entry_low + plan.entry_high) / 2.0
                 _persist_setup(symbol, state)
-                return _decision(signal, context, "BREAKEVEN", "Trade moved in favor", "Consider moving the stop to breakeven after accounting for fees.", MANAGEMENT_COOLDOWN_SECONDS)
+                return _decision(signal, context, "BREAKEVEN", "Trade moved in favor", f"Consider protecting near breakeven at {price_text(state['management_stop'])}, after accounting for fees.", MANAGEMENT_COOLDOWN_SECONDS)
             if adjusted < -20:
                 _clear_setup(symbol)
                 return _decision(signal, context, "EXIT", "Direction reversed", "The model turned materially bearish; reassess or exit the remaining position.", MANAGEMENT_COOLDOWN_SECONDS)
         else:
             if price <= plan.tp3:
                 _clear_setup(symbol)
-                return _decision(signal, context, "TP3", "Final target reached", "Consider closing the remaining position.", MANAGEMENT_COOLDOWN_SECONDS)
+                return _decision(signal, context, "TP3", "Final target reached", "Close the remaining 40% and record the completed setup.", MANAGEMENT_COOLDOWN_SECONDS)
             if price <= plan.tp2 and not state.get("tp2"):
                 state["tp2"] = True
+                state["management_stop"] = plan.tp1
                 _persist_setup(symbol, state)
-                return _decision(signal, context, "TP2", "Second target reached", "Consider scaling out further and trailing the stop.", MANAGEMENT_COOLDOWN_SECONDS)
+                return _decision(signal, context, "TP2", "Second target reached", f"Consider taking another 30% and protecting the remainder near TP1 at {price_text(plan.tp1)}.", MANAGEMENT_COOLDOWN_SECONDS)
             if price <= plan.tp1 and not state.get("tp1"):
                 state["tp1"] = True
+                state["breakeven"] = True
+                state["management_stop"] = (plan.entry_low + plan.entry_high) / 2.0
                 _persist_setup(symbol, state)
-                return _decision(signal, context, "TP1", "First target reached", "Consider partial profit and move protection toward breakeven.", MANAGEMENT_COOLDOWN_SECONDS)
+                return _decision(signal, context, "TP1", "First target reached", f"Consider taking 30% and protecting the remainder near breakeven at {price_text(state['management_stop'])}.", MANAGEMENT_COOLDOWN_SECONDS)
             if price <= plan.entry_low - plan.risk_per_unit * 0.75 and not state.get("breakeven"):
                 state["breakeven"] = True
+                state["management_stop"] = (plan.entry_low + plan.entry_high) / 2.0
                 _persist_setup(symbol, state)
-                return _decision(signal, context, "BREAKEVEN", "Trade moved in favor", "Consider moving the stop to breakeven after accounting for fees.", MANAGEMENT_COOLDOWN_SECONDS)
+                return _decision(signal, context, "BREAKEVEN", "Trade moved in favor", f"Consider protecting near breakeven at {price_text(state['management_stop'])}, after accounting for fees.", MANAGEMENT_COOLDOWN_SECONDS)
             if adjusted > 20:
                 _clear_setup(symbol)
                 return _decision(signal, context, "EXIT", "Direction reversed", "The model turned materially bullish; reassess or exit the remaining position.", MANAGEMENT_COOLDOWN_SECONDS)
+
+        if context is not None and not state.get("exit_warning"):
+            adverse: list[str] = []
+            funding = float(getattr(context, "funding_rate", 0.0))
+            oi_change = float(getattr(context, "open_interest_change_1h", 0.0))
+            taker_flow = float(getattr(context, "taker_flow_imbalance", 0.0))
+            large_flow = float(getattr(context, "large_flow_imbalance", 0.0))
+            macro_bias = str(getattr(context, "macro_bias", "NEUTRAL"))
+            news_label = str(getattr(context, "news_label", "NEUTRAL"))
+            if (side == "LONG" and funding >= 0.0005) or (side == "SHORT" and funding <= -0.0005):
+                adverse.append("funding is crowded against the position")
+            if oi_change >= 5.0 and ((side == "LONG" and taker_flow <= -15.0) or (side == "SHORT" and taker_flow >= 15.0)):
+                adverse.append("open interest is expanding with adverse taker flow")
+            if (side == "LONG" and taker_flow <= -15.0) or (side == "SHORT" and taker_flow >= 15.0):
+                adverse.append("taker flow has turned against the position")
+            if (side == "LONG" and large_flow <= -30.0) or (side == "SHORT" and large_flow >= 30.0):
+                adverse.append("large-trade flow has turned against the position")
+            if (side == "LONG" and macro_bias == "BEARISH") or (side == "SHORT" and macro_bias == "BULLISH"):
+                adverse.append("macro bias opposes the position")
+            if (side == "LONG" and news_label == "BEARISH") or (side == "SHORT" and news_label == "BULLISH"):
+                adverse.append("news intelligence opposes the position")
+            if len(adverse) >= 3:
+                state["exit_warning"] = True
+                _persist_setup(symbol, state)
+                detail = "; ".join(adverse[:4])
+                return _decision(signal, context, "EXIT_40", "Multiple exit risks aligned", f"Consider reducing 40% and tightening protection because {detail}.", MANAGEMENT_COOLDOWN_SECONDS)
 
     if prior_score is not None and abs(adjusted - prior_score) >= RAPID_SCORE_CHANGE:
         return _decision(signal, context, "RAPID_CHANGE", "Rapid score change", "Pause and reassess; market conditions changed quickly.", RAPID_CHANGE_COOLDOWN_SECONDS)
@@ -999,6 +1040,8 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
             "tp1": False,
             "tp2": False,
             "breakeven": False,
+            "management_stop": signal.trade_plan.stop_loss,
+            "exit_warning": False,
         }
         _persist_setup(symbol, setup_states[symbol])
         return _decision(signal, context, "ENTRY", "Setup confirmed at planned level", "Entry is confirmed near the planned zone. Avoid entering outside the displayed range.", ENTRY_COOLDOWN_SECONDS)

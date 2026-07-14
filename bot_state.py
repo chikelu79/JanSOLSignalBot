@@ -176,6 +176,8 @@ def validate_state(
                     "tp1": bool(setup.get("tp1", False)),
                     "tp2": bool(setup.get("tp2", False)),
                     "breakeven": bool(setup.get("breakeven", False)),
+                    "management_stop": float(setup.get("management_stop", clean_plan["stop_loss"])),
+                    "exit_warning": bool(setup.get("exit_warning", False)),
                 }
             except (KeyError, TypeError, ValueError):
                 continue
