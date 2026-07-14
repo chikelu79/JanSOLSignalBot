@@ -555,6 +555,10 @@ def record_entry_signal(source: str, symbol: str, side: str, plan: Any, timefram
     record_signal_performance({
         "id": signal_id, "source": source, "symbol": symbol, "side": side,
         "profile": f"{get_trading_horizon()} / {get_risk_style()}", "timeframe": timeframe,
+        "horizon": get_trading_horizon(), "risk_style": get_risk_style(),
+        "setup_type": str(plan.get("zone_state", source) if isinstance(plan, dict) else source),
+        "event_plan": bool(plan.get("event_plan", False)) if isinstance(plan, dict) else False,
+        "setup_quality": 0,
         "entry": entry, "stop": value("stop_loss") if not isinstance(plan, dict) else value("stop"),
         "tp1": value("tp1"), "tp2": value("tp2"), "tp3": value("tp3"),
         "sent_at": now, "status": "OPEN", "tp1_hit": False, "tp2_hit": False,
@@ -593,6 +597,26 @@ def build_success_stats_message() -> str:
             denominator = group_won + group_lost
             rate = group_won / denominator * 100.0 if denominator else 0.0
             lines.append(f"• {label}: {rate:.1f}% ({group_won}/{denominator}; {sum(item.get('status') == 'OPEN' for item in items)} open)")
+    def add_breakdown(title: str, key) -> None:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in records:
+            grouped.setdefault(str(key(item)), []).append(item)
+        if not grouped:
+            return
+        lines.extend(["", title])
+        for label, items in sorted(grouped.items()):
+            group_won = sum(item.get("status") == "WON" for item in items)
+            group_lost = sum(item.get("status") == "LOST" for item in items)
+            denominator = group_won + group_lost
+            rate = group_won / denominator * 100.0 if denominator else 0.0
+            sample_note = "early sample" if denominator < 10 else "tracked sample"
+            lines.append(f"• {label}: {rate:.1f}% ({group_won}/{denominator}; {sample_note})")
+    add_breakdown("BY DIRECTION", lambda item: item.get("side", "UNKNOWN"))
+    add_breakdown("BY SETUP TYPE", lambda item: item.get("setup_type", item.get("source", "UNKNOWN")))
+    add_breakdown("EVENT COMPARISON", lambda item: "POST-EVENT" if item.get("event_plan") else "STANDARD")
+    quality_values = [int(item.get("setup_quality", 0)) for item in records if int(item.get("setup_quality", 0)) > 0]
+    if quality_values:
+        lines.extend(["", f"Average recorded setup quality: {sum(quality_values) / len(quality_values):.1f}%"])
     lines.extend([
         "", "COUNTING RULES",
         "• Win = TP1 reached before the original stop.",
@@ -734,6 +758,12 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
             ]
             if bool(plan.get("event_plan", False)):
                 reasons.append("Levels were rebuilt from post-event price structure")
+            update_signal_performance(
+                plan["signal_id"],
+                setup_quality=setup_quality,
+                setup_type=str(plan.get("zone_state", "REVERSAL TEST")),
+                event_plan=bool(plan.get("event_plan", False)),
+            )
             managed_plan = TradePlan(
                 side=side, entry_low=zone_low, entry_high=zone_high,
                 stop_loss=float(plan["stop"]), invalidation=float(plan["stop"]),

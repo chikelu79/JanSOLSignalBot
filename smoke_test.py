@@ -300,6 +300,11 @@ def main() -> None:
     assert "Setup quality:" in armed_alert.message
     assert "Conservative leverage ceiling:" in armed_alert.message
     assert "WHY THIS QUALIFIED" in armed_alert.message
+    learning_stats = build_success_stats_message()
+    assert "BY DIRECTION" in learning_stats
+    assert "BY SETUP TYPE" in learning_stats
+    assert "EVENT COMPARISON" in learning_stats
+    assert "Average recorded setup quality:" in learning_stats
     setup_states.pop(signal.symbol, None)
     remove_active_setup(signal.symbol)
     remove_armed_trade_plans(signal.symbol)
