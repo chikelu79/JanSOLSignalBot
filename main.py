@@ -46,6 +46,7 @@ from notifier import (
     evaluate_signal_alert,
     evaluate_derivatives_alert,
     evaluate_economic_alert,
+    evaluate_early_opportunity_alert,
     evaluate_session_alert,
     evaluate_news_alert,
     price_text,
@@ -1518,7 +1519,17 @@ async def monitor_one_symbol(
                 derivatives_data,
             )
 
-            for alert_decision in (decision, derivatives_decision):
+            early_decision = evaluate_early_opportunity_alert(
+                signal,
+                macro_context,
+                derivatives_data,
+            )
+            alert_decisions = (
+                (decision, derivatives_decision)
+                if decision.should_send
+                else (early_decision, derivatives_decision)
+            )
+            for alert_decision in alert_decisions:
                 if not alert_decision.should_send:
                     continue
                 destination = (

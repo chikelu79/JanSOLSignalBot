@@ -22,6 +22,7 @@ DERIVATIVES_ALERT_COOLDOWN_SECONDS = 30 * 60
 DERIVATIVES_EXIT_COOLDOWN_SECONDS = 15 * 60
 ECONOMIC_ALERT_COOLDOWN_SECONDS = 6 * 60 * 60
 SESSION_ALERT_COOLDOWN_SECONDS = 4 * 60 * 60
+EARLY_OPPORTUNITY_COOLDOWN_SECONDS = 20 * 60
 RAPID_SCORE_CHANGE = 22.0
 
 last_alert_times: dict[str, float] = {}
@@ -254,8 +255,8 @@ def build_early_opportunity_radar(signal: MarketSignal, context: Any | None = No
         invalidation = analysis.support if side == "LONG" else analysis.resistance
         icon = "🟢" if side == "LONG" else "🔴"
         volume_ok = analysis.relative_volume >= profile.volume_confirmation
-        taker_flow = float(getattr(context, "taker_flow_imbalance", 0.0))
-        large_flow = float(getattr(context, "large_flow_imbalance", 0.0))
+        taker_flow = float(context.get("taker_flow_imbalance", 0.0) if isinstance(context, dict) else getattr(context, "taker_flow_imbalance", 0.0))
+        large_flow = float(context.get("large_flow_imbalance", 0.0) if isinstance(context, dict) else getattr(context, "large_flow_imbalance", 0.0))
         supportive_flow = (side == "LONG" and (taker_flow >= 15 or large_flow >= 30)) or (side == "SHORT" and (taker_flow <= -15 or large_flow <= -30))
         opposing_flow = (side == "LONG" and (taker_flow <= -15 or large_flow <= -30)) or (side == "SHORT" and (taker_flow >= 15 or large_flow >= 30))
         flow_status = "🟢 SUPPORTIVE" if supportive_flow else "🔴 OPPOSING" if opposing_flow else "🟡 BALANCED"
@@ -282,6 +283,63 @@ def build_early_opportunity_radar(signal: MarketSignal, context: Any | None = No
     if opportunities[-1] == "":
         opportunities.pop()
     return opportunities
+
+
+def evaluate_early_opportunity_alert(
+    signal: MarketSignal,
+    context: Any | None = None,
+    derivatives: dict[str, Any] | None = None,
+) -> AlertDecision:
+    radar_context = context if context is not None else derivatives
+    radar = build_early_opportunity_radar(signal, radar_context)
+    candidates: list[tuple[float, str, str, list[str]]] = []
+    for index, line in enumerate(radar):
+        if " EARLY LONG WATCH" not in line and " EARLY SHORT WATCH" not in line:
+            continue
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        interval = parts[1]
+        side = "LONG" if " EARLY LONG WATCH" in line else "SHORT"
+        analysis = signal.analyses.get(interval)
+        if analysis is None:
+            continue
+        zone_low = min(analysis.ema20, analysis.vwap)
+        zone_high = max(analysis.ema20, analysis.vwap)
+        if zone_low <= signal.price <= zone_high:
+            distance = 0.0
+        else:
+            distance = min(abs(signal.price - zone_low), abs(signal.price - zone_high)) / max(signal.price, 1e-9) * 100.0
+        if distance > 1.0:
+            continue
+        block = [line]
+        for detail in radar[index + 1:]:
+            if not detail:
+                break
+            block.append(detail)
+        candidates.append((distance, interval, side, block))
+    if not candidates:
+        return AlertDecision(False, "NONE", signal.symbol, "", "No fresh early opportunity near its decision zone")
+    distance, interval, side, block = min(candidates, key=lambda item: item[0])
+    key = make_alert_key(signal.symbol, "EARLY_OPPORTUNITY", f"{interval}:{side}")
+    if not alert_allowed(key, EARLY_OPPORTUNITY_COOLDOWN_SECONDS):
+        return AlertDecision(False, "NONE", signal.symbol, "", "Early-opportunity cooldown active")
+    mark_alert_sent(key)
+    economic = get_economic_risk()
+    event_note = "New entries remain blocked by the economic-event window." if economic.block_new_entries else economic.detail
+    message = "\n".join([
+        f"🔔 {signal.symbol} EARLY {side} OPPORTUNITY",
+        "",
+        f"Current price: {price_text(signal.price)}",
+        f"Distance to decision zone: {distance:.2f}%",
+        *block,
+        "",
+        f"Economic risk: {economic.status}",
+        event_note,
+        "",
+        "This is an early watch, not a confirmed entry. Wait for the displayed price, candle, volume and flow conditions.",
+    ])
+    return AlertDecision(True, "EARLY_OPPORTUNITY", signal.symbol, message, f"Fresh {interval} {side.lower()} trigger near decision zone")
 
 
 def evidence_icon(reason: str) -> str:

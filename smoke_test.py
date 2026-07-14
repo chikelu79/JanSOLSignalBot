@@ -17,6 +17,7 @@ from notifier import (
     build_early_opportunity_radar,
     build_scan_message,
     evaluate_derivatives_alert,
+    evaluate_early_opportunity_alert,
     evaluate_economic_alert,
     evaluate_session_alert,
     evaluate_signal_alert,
@@ -140,6 +141,15 @@ def main() -> None:
     assert "RSI 6 crossed above RSI 12" in radar[1]
     assert "Stochastic RSI crossed bullish from oversold" in radar[1]
     assert "MFI money flow turned upward" in radar[1]
+    signal.price = 74.9
+    early_alert = evaluate_early_opportunity_alert(
+        signal,
+        derivatives={"taker_flow_imbalance": 20.0, "large_flow_imbalance": 40.0},
+    )
+    assert early_alert.should_send
+    assert early_alert.alert_type == "EARLY_OPPORTUNITY"
+    assert "Distance to decision zone" in early_alert.message
+    signal.price = 100.5
     signal.analyses = {}
     signal.analyses = {
         "15m": SimpleNamespace(
