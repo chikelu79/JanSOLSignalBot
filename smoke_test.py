@@ -309,6 +309,24 @@ def main() -> None:
     assert "FOCUS: NO CLEAR DIRECTION — WAIT" in conflicting_dashboard
     assert "BLOCKED: Bearish regular divergence" in conflicting_dashboard
     signal.analyses["15m"].divergences = []
+    original_price, original_score = signal.price, signal.score
+    original_resistances = {interval: analysis.resistance for interval, analysis in signal.analyses.items()}
+    signal.price = 76.62
+    signal.score = 26.2
+    signal.analyses["15m"].resistance = 75.60
+    signal.analyses["1h"].resistance = 78.20
+    signal.analyses["4h"].resistance = 83.86
+    breakout_plans = create_structural_trade_plans(signal)
+    assert breakout_plans["LONG"]["zone_state"] == "BREAKOUT RETEST"
+    assert breakout_plans["LONG"]["zone_low"] < 75.60 < breakout_plans["LONG"]["zone_high"]
+    breakout_dashboard = build_trade_dashboard(
+        signal,
+        SimpleNamespace(adjusted_score=26.2, taker_flow_imbalance=30.0, large_flow_imbalance=50.0),
+    )
+    assert "$75.6000" in breakout_dashboard
+    signal.price, signal.score = original_price, original_score
+    for interval, resistance in original_resistances.items():
+        signal.analyses[interval].resistance = resistance
     generated_plans = create_structural_trade_plans(signal)
     assert set(generated_plans) == {"LONG", "SHORT"}
     armed_long = {
