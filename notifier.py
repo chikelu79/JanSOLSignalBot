@@ -493,8 +493,11 @@ def evaluate_early_opportunity_alert(
     mark_alert_sent(key)
     economic = get_economic_risk()
     if economic.block_new_entries:
-        event_label = "🔴 EVENT BLACKOUT — DO NOT OPEN A NEW TRADE"
-        event_note = "New entries remain blocked by the economic-event window."
+        event_label = "🔴 RELEASE IMPULSE — OBSERVE" if economic.status == "RELEASE IMPULSE" else "🔴 PRE-RELEASE SAFETY — STANDARD ENTRIES PAUSED"
+        event_note = economic.detail
+    elif economic.status == "EVENT OPPORTUNITY":
+        event_label = "🟢 EVENT OPPORTUNITY WINDOW — CONFIRMATION REQUIRED"
+        event_note = economic.detail
     elif economic.status not in {"CLEAR", "NONE"}:
         event_label = "🟡 EVENT APPROACHING — CAUTION"
         event_note = economic.detail
@@ -838,7 +841,7 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
         volume_ok = analysis.relative_volume >= profile.volume_confirmation
         candle_ok = reversal_candle_confirmed(analysis, side)
         if economic.block_new_entries:
-            status = "🔴 EVENT BLOCK"
+            status = "🔴 RELEASE IMPULSE" if economic.status == "RELEASE IMPULSE" else "🔴 PRE-RELEASE PAUSE"
         elif in_zone and volume_ok and flow_support and momentum_support and candle_ok:
             status = "🟢 CONFIRMATION READY"
         elif in_zone:
@@ -879,8 +882,10 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
     )
     readiness_passed = sum(bool(value) for value in readiness_checks)
     readiness_icon = "🟢" if readiness_passed == len(readiness_checks) else "🟡" if readiness_passed >= 3 else "🔴"
-    if economic.block_new_entries:
-        next_action = "Wait until the economic-event block has cleared."
+    if economic.status == "RELEASE IMPULSE":
+        next_action = "Observe the first move. Do not chase; wait for the event opportunity window and a close/retest."
+    elif economic.block_new_entries:
+        next_action = "Keep both plans armed. Standard entries are paused until release; then wait for the impulse to settle."
     elif not focus["in_zone"]:
         next_action = f"Let price reach the {focus_side} zone; do not chase it."
     elif not focus["volume_ok"] or not focus["flow_support"]:
@@ -892,9 +897,15 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
     else:
         next_action = f"Require the {focus['trigger']} and wait for the confirmed-entry alert."
     focus_proximity = "IN ZONE" if focus["in_zone"] else f"{focus['distance']:.2f}% AWAY"
-    if economic.block_new_entries:
-        economic_summary = "EVENT BLACKOUT — DO NOT OPEN A NEW TRADE"
+    if economic.status == "RELEASE IMPULSE":
+        economic_summary = "RELEASE IMPULSE — OBSERVE, DO NOT CHASE"
         economic_check = f"🔴 {economic_summary}"
+    elif economic.block_new_entries:
+        economic_summary = "PRE-RELEASE SAFETY — STANDARD ENTRIES PAUSED; EVENT MODE ARMED"
+        economic_check = f"🔴 {economic_summary}"
+    elif economic.status == "EVENT OPPORTUNITY":
+        economic_summary = "EVENT OPPORTUNITY WINDOW — CONFIRMATION REQUIRED"
+        economic_check = f"🟢 {economic_summary}"
     elif economic.status not in {"CLEAR", "NONE"}:
         economic_summary = "EVENT APPROACHING — CAUTION"
         economic_check = f"🟡 {economic_summary}; entries allowed for now"
@@ -1522,15 +1533,23 @@ def evaluate_economic_alert() -> AlertDecision:
         return AlertDecision(False, "NONE", "MARKET", "", "Economic alert cooldown active")
 
     mark_alert_sent(key)
-    heading = "🚨 HIGH-IMPACT EVENT RISK" if risk.block_new_entries else "📅 HIGH-IMPACT EVENT AHEAD"
+    heading = "⚡ EVENT RELEASE MODE" if risk.status in {"RELEASE IMPULSE", "EVENT OPPORTUNITY"} else "🚨 HIGH-IMPACT EVENT SAFETY" if risk.block_new_entries else "📅 HIGH-IMPACT EVENT AHEAD"
     risk_label = (
-        "🔴 EVENT BLACKOUT — DO NOT OPEN A NEW TRADE"
+        "🔴 RELEASE IMPULSE — OBSERVE, DO NOT CHASE"
+        if risk.status == "RELEASE IMPULSE" else
+        "🔴 PRE-RELEASE SAFETY — STANDARD ENTRIES PAUSED; EVENT MODE ARMED"
         if risk.block_new_entries else
+        "🟢 EVENT OPPORTUNITY WINDOW — CONFIRMATION REQUIRED"
+        if risk.status == "EVENT OPPORTUNITY" else
         "🟡 EVENT APPROACHING — CAUTION"
     )
     action = (
-        "New entries are temporarily blocked. Wait for the release candle to settle and a level to retest."
+        "Observe the impulse. Wait for a candle close and level retest; do not chase the first move."
+        if risk.status == "RELEASE IMPULSE"
+        else "Standard entries are paused, but armed plans remain active for the post-release opportunity."
         if risk.block_new_entries
+        else "A dedicated event setup may trigger only with price structure, candle, volume and flow confirmation."
+        if risk.status == "EVENT OPPORTUNITY"
         else "Avoid chasing and be cautious with fresh exposure as the release approaches."
     )
     message = "\n".join(

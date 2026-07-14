@@ -72,6 +72,7 @@ def main() -> None:
     day_blackout = get_profile_economic_risk(datetime(2026, 7, 14, 6, 36, tzinfo=eastern), "DAY", "BALANCED")
     scalp_caution = get_profile_economic_risk(datetime(2026, 7, 14, 6, 36, tzinfo=eastern), "SCALPING", "AGGRESSIVE")
     assert day_blackout.block_new_entries is True
+    assert day_blackout.status == "PRE-RELEASE SAFETY"
     assert scalp_caution.block_new_entries is False
     assert upcoming.status == "UPCOMING" and not upcoming.block_new_entries
     assert blocked.status == "HIGH RISK" and blocked.block_new_entries
@@ -80,7 +81,7 @@ def main() -> None:
     economic_alert = evaluate_economic_alert()
     assert economic_alert.alert_type in {"ECONOMIC_EVENT", "NONE"}
     if economic_alert.alert_type == "ECONOMIC_EVENT":
-        assert "EVENT APPROACHING — CAUTION" in economic_alert.message or "EVENT BLACKOUT — DO NOT OPEN A NEW TRADE" in economic_alert.message
+        assert "EVENT APPROACHING — CAUTION" in economic_alert.message or "PRE-RELEASE SAFETY" in economic_alert.message
     lunar = get_lunar_context(datetime(2026, 7, 13, 20, 0, tzinfo=eastern))
     assert lunar.label == "NEAR NEW MOON"
     assert get_session_context(datetime(2026, 7, 14, 9, 20, tzinfo=eastern)).label == "US OPEN"
@@ -249,7 +250,7 @@ def main() -> None:
     assert "Momentum:" in trade_dashboard and "Volume:" in trade_dashboard
     assert "Reversal candle:" in trade_dashboard
     assert "Order flow:" in trade_dashboard and "Economic event:" in trade_dashboard
-    assert "EVENT APPROACHING — CAUTION" in trade_dashboard or "EVENT BLACKOUT — DO NOT OPEN A NEW TRADE" in trade_dashboard or "NO EVENT RESTRICTION" in trade_dashboard
+    assert "EVENT APPROACHING — CAUTION" in trade_dashboard or "PRE-RELEASE SAFETY" in trade_dashboard or "RELEASE IMPULSE" in trade_dashboard or "EVENT OPPORTUNITY WINDOW" in trade_dashboard or "NO EVENT RESTRICTION" in trade_dashboard
     assert "Plan control:" in trade_dashboard and "Next action:" in trade_dashboard
     assert "LONG PLAN" in trade_dashboard and "SHORT PLAN" in trade_dashboard
     assert "KEY LEVEL MAP" in trade_dashboard

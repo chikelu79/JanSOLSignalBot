@@ -107,9 +107,9 @@ def get_profile_economic_risk(
     horizon: str | None = None,
     risk_style: str | None = None,
 ) -> EconomicRisk:
-    """Expand the pre-release entry blackout to match the holding horizon."""
+    """Apply profile-aware pre-release protection and post-release opportunity timing."""
     risk = get_economic_risk(now)
-    if risk.block_new_entries or risk.event is None or risk.status == "CLEAR":
+    if risk.event is None or risk.status == "CLEAR":
         return risk
     if horizon is None or risk_style is None:
         from bot_state import get_risk_style, get_trading_horizon
@@ -120,11 +120,30 @@ def get_profile_economic_risk(
     blackout_hours = base_hours * style_multiplier
     current = now.astimezone(EASTERN) if now else datetime.now(EASTERN)
     hours_until = (risk.event.scheduled_at - current).total_seconds() / 3600.0
+    if hours_until <= 0.0:
+        minutes_since = abs(hours_until) * 60.0
+        base_settle_minutes = {"SCALPING": 5.0, "DAY": 15.0, "SWING": 30.0}.get(str(horizon).upper(), 15.0)
+        settle_minutes = base_settle_minutes * style_multiplier
+        if minutes_since < settle_minutes:
+            return EconomicRisk(
+                risk.event,
+                "RELEASE IMPULSE",
+                f"{risk.event.name} was released {minutes_since:.0f} minutes ago. Observe the first move; do not chase it. The {str(horizon).upper()} / {str(risk_style).upper()} profile waits {settle_minutes:.0f} minutes before evaluating a close and retest.",
+                True,
+            )
+        if minutes_since <= 120.0:
+            return EconomicRisk(
+                risk.event,
+                "EVENT OPPORTUNITY",
+                f"{risk.event.name} was released {minutes_since:.0f} minutes ago. Event setups are now allowed only after a level break or reversal, candle close/retest, volume and order-flow confirmation.",
+                False,
+            )
+        return risk
     if 0.0 < hours_until <= blackout_hours:
         return EconomicRisk(
             risk.event,
-            "PROFILE BLACKOUT",
-            f"{risk.event.name} is due in {hours_until:.1f} hours. The {str(horizon).upper()} / {str(risk_style).upper()} profile blocks fresh entries inside {blackout_hours:.1f} hours of release.",
+            "PRE-RELEASE SAFETY",
+            f"{risk.event.name} is due in {hours_until:.1f} hours. Standard entries pause inside {blackout_hours:.1f} hours for the {str(horizon).upper()} / {str(risk_style).upper()} profile, while both plans remain armed for the post-release opportunity.",
             True,
         )
     return risk
