@@ -5,11 +5,12 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from bot_state import get_active_setups, remove_active_setup, set_active_setup
+from bot_state import get_active_setups, get_risk_style, get_trading_horizon, remove_active_setup, set_active_setup
 from economic_calendar import format_event_time, get_economic_risk
 from lunar_context import get_lunar_context
 from session_context import get_session_context, get_special_market_event
 from strategy import MarketSignal, TradePlan, get_readiness_label, get_signal_grade
+from trading_profile import get_profile
 
 WATCH_COOLDOWN_SECONDS = 20 * 60
 PREPARE_COOLDOWN_SECONDS = 10 * 60
@@ -152,6 +153,7 @@ def signal_hash(signal: MarketSignal) -> str:
 
 
 def format_timeframes(signal: MarketSignal) -> list[str]:
+    profile = get_profile(get_trading_horizon(), get_risk_style())
     lines: list[str] = []
     for interval in ("5m", "15m", "1h", "4h", "8h", "1d"):
         analysis = signal.analyses.get(interval)
@@ -160,7 +162,7 @@ def format_timeframes(signal: MarketSignal) -> list[str]:
         else:
             lines.append(
                 f"{direction_emoji(analysis.direction)} {interval}: "
-                f"{analysis.direction} ({analysis.score:+.0f}; LONG ≥ +62, SHORT ≤ -62)"
+                f"{analysis.direction} ({analysis.score:+.0f}; LONG ≥ +{profile.watch_threshold:.0f}, SHORT ≤ -{profile.watch_threshold:.0f})"
             )
         if interval in {"15m", "4h"}:
             lines.append("")
@@ -214,11 +216,12 @@ def format_market_context(context: Any | None) -> list[str]:
     large_flow = float(getattr(context, "large_flow_imbalance", 0.0))
     large_flow_label = "BUY DOMINANT" if large_flow >= 30.0 else "SELL DOMINANT" if large_flow <= -30.0 else "BALANCED"
     large_flow_icon = "🟢" if large_flow >= 30.0 else "🔴" if large_flow <= -30.0 else "🟡"
+    profile = get_profile(get_trading_horizon(), get_risk_style())
     return [
         f"{direction_emoji(getattr(context, 'btc_direction', 'UNKNOWN'))} BTC: {getattr(context, 'btc_direction', 'UNKNOWN')} "
-        f"({getattr(context, 'btc_score', 0):+.1f}; directional at ±62)",
+        f"({getattr(context, 'btc_score', 0):+.1f}; directional at ±{profile.watch_threshold:.0f})",
         f"{direction_emoji(getattr(context, 'eth_direction', 'UNKNOWN'))} ETH: {getattr(context, 'eth_direction', 'UNKNOWN')} "
-        f"({getattr(context, 'eth_score', 0):+.1f}; directional at ±62)",
+        f"({getattr(context, 'eth_score', 0):+.1f}; directional at ±{profile.watch_threshold:.0f})",
         "",
         f"🔵 BTC correlation: {correlation:.2f} ({correlation_regime}; high ≥ 0.70)",
         f"🔵 BTC dominance: {getattr(context, 'btc_dominance', 0):.2f}% (altcoin headwind ≥ 58%; support ≤ 52%)",
@@ -465,6 +468,7 @@ def execution_status(signal: MarketSignal) -> tuple[str, str]:
 
 
 def build_scan_message(signal: MarketSignal, context: Any | None = None) -> str:
+    profile = get_profile(get_trading_horizon(), get_risk_style())
     adjusted = float(getattr(context, "adjusted_score", signal.score))
     status, status_detail = execution_status(signal)
     session = get_session_context()
@@ -481,15 +485,18 @@ def build_scan_message(signal: MarketSignal, context: Any | None = None) -> str:
     lines = [
         f"📡 {signal.symbol} MARKET SCAN",
         "",
+        f"PROFILE: {profile.horizon} / {profile.risk_style}",
+        f"Thresholds: setup ±{profile.watch_threshold:.0f}; confirmed ±{profile.confirmed_threshold:.0f}; strong ±{profile.strong_threshold:.0f}",
+        "",
         f"Price: {price_text(signal.price)} (reference: planned entry zone when a setup exists)",
         f"{direction_emoji(signal.direction)} Direction: {signal.direction}",
         "",
-        f"Technical score: {signal.score:+.1f} (LONG ≥ +62; SHORT ≤ -62)",
-        f"Adjusted score: {adjusted:+.1f} (LONG ≥ +62; SHORT ≤ -62)",
-        f"Confidence: {min(95, int(abs(adjusted)))}% (setup ≥ 62%; confirmed ≥ 74%; strong ≥ 84%)",
+        f"Technical score: {signal.score:+.1f} (LONG ≥ +{profile.watch_threshold:.0f}; SHORT ≤ -{profile.watch_threshold:.0f})",
+        f"Adjusted score: {adjusted:+.1f} (LONG ≥ +{profile.watch_threshold:.0f}; SHORT ≤ -{profile.watch_threshold:.0f})",
+        f"Confidence: {min(95, int(abs(adjusted)))}% (setup ≥ {profile.watch_threshold:.0f}%; confirmed ≥ {profile.confirmed_threshold:.0f}%; strong ≥ {profile.strong_threshold:.0f}%)",
         "",
         f"Grade: {get_signal_grade(signal)} (A+ ≥ 95; A ≥ 90; B ≥ 80; C ≥ 70; D < 70)",
-        f"Readiness: {get_readiness_label(signal)} (BUILDING ≥ 50; NEAR TRIGGER ≥ 70; HIGH QUALITY ≥ 85)",
+        f"Readiness: {get_readiness_label(signal)} (BUILDING ≥ {profile.watch_threshold * 0.80:.0f}; NEAR TRIGGER ≥ {profile.confirmed_threshold:.0f}; HIGH QUALITY ≥ {profile.strong_threshold:.0f})",
         "",
         f"Execution status: {status}",
         f"Action: {status_detail}",

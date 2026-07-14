@@ -22,9 +22,20 @@ from notifier import (
 )
 from strategy import MarketSignal, TradePlan, create_trade_plan
 from session_context import get_session_context, get_special_market_event
+from trading_profile import estimate_position, get_profile
 
 
 def main() -> None:
+    conservative_scalp = get_profile("SCALPING", "CONSERVATIVE")
+    assert conservative_scalp.watch_threshold == 68.0
+    assert conservative_scalp.weights["5m"] == 0.30
+    aggressive_swing = get_profile("SWING", "AGGRESSIVE")
+    assert aggressive_swing.confirmed_threshold == 66.0
+    assert aggressive_swing.primary_timeframes == ("1h", "4h")
+    position = estimate_position("LONG", 75.0, 500.0, 5.0, 72.0)
+    assert position["notional"] == 2500.0
+    assert round(float(position["liquidation"]), 3) == 60.375
+    assert round(float(position["stop_loss"]), 2) == 100.0
     eastern = ZoneInfo("America/New_York")
     upcoming = get_economic_risk(datetime(2026, 7, 13, 20, 0, tzinfo=eastern))
     blocked = get_economic_risk(datetime(2026, 7, 14, 8, 0, tzinfo=eastern))

@@ -18,16 +18,20 @@ from news_intelligence import build_news_message, fetch_news_intelligence
 from bot_state import (
     add_to_watchlist,
     get_runtime_chat_id,
+    get_risk_style,
     get_selected_pair,
     get_state_snapshot,
     get_watchlist,
+    get_trading_horizon,
     is_monitor_enabled,
     remove_from_watchlist,
     set_monitor_enabled,
     set_runtime_chat_id,
+    set_trading_profile,
     set_selected_pair,
     set_watchlist,
 )
+from trading_profile import estimate_position, get_profile
 from notifier import (
     build_active_setups_message,
     build_scan_message,
@@ -488,6 +492,8 @@ async def start_command(
         "/market - BTC, dominance and VIX context\n"
         "/calendar - CPI, NFP and FOMC risk windows\n"
         "/news - Fed, SEC and Truth Social intelligence\n"
+        "/profile - View or change trading profile\n"
+        "/riskcalc - Position and liquidation estimate\n"
         "/monitor on - Enable automatic alerts\n"
         "/monitor off - Disable automatic alerts\n"
         "/setups - Show active managed setups\n"
@@ -530,6 +536,7 @@ async def status_command(
         f"{MONITOR_INTERVAL_SECONDS} seconds\n"
         f"Market source: Binance\n"
         f"Timeframes: 5m, 15m, 1h, 4h, 8h, 1d\n"
+        f"Trading profile: {state['trading_horizon']} / {state['risk_style']}\n"
         f"Macro context module: "
         f"{'AVAILABLE' if MARKET_CONTEXT_AVAILABLE else 'NOT INSTALLED'}\n"
         f"Telegram destination: "
@@ -1082,6 +1089,68 @@ async def setups_command(
     )
 
 
+async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if context.args:
+        if len(context.args) != 2:
+            await update.effective_message.reply_text(
+                "Use /profile scalping conservative\nHorizons: scalping, day, swing\nRisk: conservative, balanced, aggressive"
+            )
+            return
+        try:
+            set_trading_profile(context.args[0], context.args[1])
+        except ValueError as error:
+            await update.effective_message.reply_text(f"⚠️ {error}")
+            return
+    profile = get_profile(get_trading_horizon(), get_risk_style())
+    await update.effective_message.reply_text(
+        "🎛 TRADING PROFILE\n\n"
+        f"Horizon: {profile.horizon}\nRisk style: {profile.risk_style}\n\n"
+        f"Setup threshold: ±{profile.watch_threshold:.0f}\n"
+        f"Confirmed: ±{profile.confirmed_threshold:.0f}\n"
+        f"Strong: ±{profile.strong_threshold:.0f}\n"
+        f"Required volume: {profile.volume_confirmation:.2f}× normal\n"
+        f"Minimum TP2 reward/risk: {profile.minimum_reward_risk:.2f}R\n"
+        f"Primary timeframes: {', '.join(profile.primary_timeframes)}\n"
+        f"Confirmation timeframes: {', '.join(profile.confirmation_timeframes)}\n\n"
+        "Change with /profile scalping conservative"
+    )
+
+
+async def riskcalc_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if len(context.args) not in {4, 5}:
+        await update.effective_message.reply_text(
+            "Use /riskcalc long 75.10 500 5 72.50\n\n"
+            "Order: side, entry, margin, leverage, optional stop."
+        )
+        return
+    try:
+        side = context.args[0]
+        entry, margin, leverage = map(float, context.args[1:4])
+        stop = float(context.args[4]) if len(context.args) == 5 else None
+        result = estimate_position(side, entry, margin, leverage, stop)
+    except ValueError as error:
+        await update.effective_message.reply_text(f"⚠️ Invalid calculation: {error}")
+        return
+    stop_lines = ""
+    if result["stop"] is not None:
+        stop_lines = (
+            f"\nPlanned stop: {price_text(result['stop'])}"
+            f"\nEstimated stop loss: ${float(result['stop_loss']):,.2f}"
+            f"\nMargin at risk: {float(result['stop_margin_percent']):.1f}%"
+        )
+    await update.effective_message.reply_text(
+        "🧮 POSITION & LIQUIDATION ESTIMATE\n\n"
+        f"Side: {result['side']}\nEntry: {price_text(result['entry'])}\n"
+        f"Margin: ${float(result['margin']):,.2f}\nLeverage: {float(result['leverage']):g}×\n"
+        f"Position value: ${float(result['notional']):,.2f}\nQuantity: {float(result['quantity']):,.6f}\n\n"
+        f"Estimated liquidation: {price_text(result['liquidation'])}\n"
+        f"Distance to liquidation: {float(result['liquidation_distance']):.2f}%"
+        f"{stop_lines}\n\n"
+        "Estimate assumes an isolated linear USDT position and 0.50% maintenance margin. "
+        "Actual liquidation differs by exchange, fee, maintenance tier and cross-margin balance. Verify on the exchange before trading."
+    )
+
+
 async def market_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -1507,6 +1576,14 @@ async def post_init(
             "Show Fed, SEC and Truth Social intelligence",
         ),
         BotCommand(
+            "profile",
+            "View or change trading profile",
+        ),
+        BotCommand(
+            "riskcalc",
+            "Estimate position risk and liquidation",
+        ),
+        BotCommand(
             "monitor",
             "Turn automatic alerts on or off",
         ),
@@ -1719,6 +1796,20 @@ def main() -> None:
         CommandHandler(
             "setups",
             setups_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "profile",
+            profile_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "riskcalc",
+            riskcalc_command,
         )
     )
 

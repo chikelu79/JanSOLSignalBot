@@ -27,6 +27,8 @@ DEFAULT_STATE: dict[str, Any] = {
         "ETHUSDT",
     ],
     "active_setups": {},
+    "trading_horizon": "DAY",
+    "risk_style": "BALANCED",
 }
 
 
@@ -119,6 +121,11 @@ def validate_state(
             "",
         )
     ).strip()
+
+    horizon = str(state.get("trading_horizon", "DAY")).upper()
+    risk_style = str(state.get("risk_style", "BALANCED")).upper()
+    validated["trading_horizon"] = horizon if horizon in {"SCALPING", "DAY", "SWING"} else "DAY"
+    validated["risk_style"] = risk_style if risk_style in {"CONSERVATIVE", "BALANCED", "AGGRESSIVE"} else "BALANCED"
 
     watchlist = state.get(
         "watchlist",
@@ -436,7 +443,29 @@ def get_state_snapshot() -> dict[str, Any]:
         "runtime_chat_id": get_runtime_chat_id(),
         "watchlist": get_watchlist(),
         "active_setups": get_active_setups(),
+        "trading_horizon": get_trading_horizon(),
+        "risk_style": get_risk_style(),
     }
+
+
+def get_trading_horizon() -> str:
+    return str(STATE.get("trading_horizon", "DAY"))
+
+
+def get_risk_style() -> str:
+    return str(STATE.get("risk_style", "BALANCED"))
+
+
+def set_trading_profile(horizon: str, risk_style: str) -> None:
+    horizon = horizon.upper()
+    risk_style = risk_style.upper()
+    if horizon not in {"SCALPING", "DAY", "SWING"}:
+        raise ValueError("Horizon must be SCALPING, DAY or SWING")
+    if risk_style not in {"CONSERVATIVE", "BALANCED", "AGGRESSIVE"}:
+        raise ValueError("Risk style must be CONSERVATIVE, BALANCED or AGGRESSIVE")
+    STATE["trading_horizon"] = horizon
+    STATE["risk_style"] = risk_style
+    save_state(STATE)
 
 
 # =========================================================

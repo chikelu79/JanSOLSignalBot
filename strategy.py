@@ -26,9 +26,15 @@ from indicators import (
     detect_regular_divergence,
     safe_float,
 )
+from bot_state import get_risk_style, get_trading_horizon
+from trading_profile import get_profile
 
 
 logger = logging.getLogger(__name__)
+
+
+def active_profile():
+    return get_profile(get_trading_horizon(), get_risk_style())
 
 
 # =========================================================
@@ -153,16 +159,17 @@ class MarketSignal:
 def score_to_direction(
     score: float,
 ) -> str:
-    if score >= STRONG_THRESHOLD:
+    profile = active_profile()
+    if score >= profile.strong_threshold:
         return "STRONG LONG"
 
-    if score >= WATCH_THRESHOLD:
+    if score >= profile.watch_threshold:
         return "LONG"
 
-    if score <= -STRONG_THRESHOLD:
+    if score <= -profile.strong_threshold:
         return "STRONG SHORT"
 
-    if score <= -WATCH_THRESHOLD:
+    if score <= -profile.watch_threshold:
         return "SHORT"
 
     return "WAIT"
@@ -185,14 +192,15 @@ def score_to_stage(
     confirmed: bool,
 ) -> str:
     absolute_score = abs(score)
+    profile = active_profile()
 
     if confirmed:
-        if absolute_score >= STRONG_THRESHOLD:
+        if absolute_score >= profile.strong_threshold:
             return "STRONG"
 
         return "CONFIRMED"
 
-    if absolute_score >= WATCH_THRESHOLD:
+    if absolute_score >= profile.watch_threshold:
         return "WATCH"
 
     return "NEUTRAL"
@@ -1073,6 +1081,7 @@ def determine_confirmation(
     overall_score: float,
     analyses: dict[str, TimeframeSignal],
 ) -> tuple[bool, list[str]]:
+    profile = active_profile()
     warnings: list[str] = []
 
     bullish_bias = overall_score >= 0
@@ -1080,29 +1089,21 @@ def determine_confirmation(
     if bullish_bias:
         short_term_aligned = all(
             interval in analyses
-            and analyses[interval].score >= 35
-            for interval in [
-                "5m",
-                "15m",
-            ]
+            and analyses[interval].score >= profile.alignment_score
+            for interval in profile.primary_timeframes
         )
 
         higher_timeframe_count = sum(
             1
-            for interval in [
-                "1h",
-                "4h",
-                "8h",
-                "1d",
-            ]
+            for interval in profile.confirmation_timeframes
             if (
                 interval in analyses
-                and analyses[interval].score >= 20
+                and analyses[interval].score >= max(15.0, profile.alignment_score - 15.0)
             )
         )
 
         volume_confirmation = any(
-            analysis.relative_volume >= 1.20
+            analysis.relative_volume >= profile.volume_confirmation
             for analysis in analyses.values()
         )
 
@@ -1112,9 +1113,9 @@ def determine_confirmation(
         )
 
         confirmed = (
-            overall_score >= CONFIRMED_THRESHOLD
+            overall_score >= profile.confirmed_threshold
             and short_term_aligned
-            and higher_timeframe_count >= 2
+            and higher_timeframe_count >= profile.higher_timeframe_count
             and (
                 volume_confirmation
                 or breakout_confirmation
@@ -1123,12 +1124,12 @@ def determine_confirmation(
 
         if not short_term_aligned:
             warnings.append(
-                "The 5m and 15m timeframes are not fully aligned bullish."
+                f"The {', '.join(profile.primary_timeframes)} profile timeframes are not fully aligned bullish."
             )
 
-        if higher_timeframe_count < 2:
+        if higher_timeframe_count < profile.higher_timeframe_count:
             warnings.append(
-                "Fewer than two higher timeframes confirm the long setup."
+                f"Fewer than {profile.higher_timeframe_count} profile confirmation timeframes support the long setup."
             )
 
         if not (
@@ -1143,29 +1144,21 @@ def determine_confirmation(
 
     short_term_aligned = all(
         interval in analyses
-        and analyses[interval].score <= -35
-        for interval in [
-            "5m",
-            "15m",
-        ]
+        and analyses[interval].score <= -profile.alignment_score
+        for interval in profile.primary_timeframes
     )
 
     higher_timeframe_count = sum(
         1
-        for interval in [
-            "1h",
-            "4h",
-            "8h",
-            "1d",
-        ]
+        for interval in profile.confirmation_timeframes
         if (
             interval in analyses
-            and analyses[interval].score <= -20
+            and analyses[interval].score <= -max(15.0, profile.alignment_score - 15.0)
         )
     )
 
     volume_confirmation = any(
-        analysis.relative_volume >= 1.20
+        analysis.relative_volume >= profile.volume_confirmation
         for analysis in analyses.values()
     )
 
@@ -1175,9 +1168,9 @@ def determine_confirmation(
     )
 
     confirmed = (
-        overall_score <= -CONFIRMED_THRESHOLD
+        overall_score <= -profile.confirmed_threshold
         and short_term_aligned
-        and higher_timeframe_count >= 2
+        and higher_timeframe_count >= profile.higher_timeframe_count
         and (
             volume_confirmation
             or breakdown_confirmation
@@ -1186,12 +1179,12 @@ def determine_confirmation(
 
     if not short_term_aligned:
         warnings.append(
-            "The 5m and 15m timeframes are not fully aligned bearish."
+            f"The {', '.join(profile.primary_timeframes)} profile timeframes are not fully aligned bearish."
         )
 
-    if higher_timeframe_count < 2:
+    if higher_timeframe_count < profile.higher_timeframe_count:
         warnings.append(
-            "Fewer than two higher timeframes confirm the short setup."
+            f"Fewer than {profile.higher_timeframe_count} profile confirmation timeframes support the short setup."
         )
 
     if not (
@@ -1305,15 +1298,12 @@ def calculate_weighted_score(
     weighted_score = 0.0
     total_weight = 0.0
 
+    profile = active_profile()
     for interval, analysis in analyses.items():
         if interval not in TIMEFRAMES:
             continue
 
-        weight = float(
-            TIMEFRAMES[
-                interval
-            ]["weight"]
-        )
+        weight = float(profile.weights.get(interval, TIMEFRAMES[interval]["weight"]))
 
         weighted_score += (
             analysis.score
@@ -1422,7 +1412,7 @@ def create_trade_plan(
 
         atr_stop = (
             entry_low
-            - atr * ATR_STOP_MULTIPLIER
+            - atr * active_profile().atr_stop_multiplier
         )
 
         structural_stop = (
@@ -1523,7 +1513,7 @@ def create_trade_plan(
 
     atr_stop = (
         entry_high
-        + atr * ATR_STOP_MULTIPLIER
+        + atr * active_profile().atr_stop_multiplier
     )
 
     structural_stop = (
@@ -1602,7 +1592,7 @@ def validate_trade_plan(
 
     if (
         trade_plan.reward_risk_tp2
-        < MINIMUM_REWARD_RISK
+        < active_profile().minimum_reward_risk
     ):
         warnings.append(
             "The projected TP2 reward-to-risk ratio "
@@ -1915,17 +1905,18 @@ def get_readiness_label(
     signal: MarketSignal,
 ) -> str:
     confidence = signal.confidence
+    profile = active_profile()
 
     if confidence >= 95:
         return "EXCEPTIONAL"
 
-    if confidence >= 85:
+    if confidence >= profile.strong_threshold:
         return "HIGH QUALITY"
 
-    if confidence >= 70:
+    if confidence >= profile.confirmed_threshold:
         return "NEAR TRIGGER"
 
-    if confidence >= 50:
+    if confidence >= profile.watch_threshold * 0.80:
         return "BUILDING"
 
     return "STAND ASIDE"
