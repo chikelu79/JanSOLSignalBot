@@ -202,6 +202,8 @@ def validate_state(
                     "breakeven": bool(setup.get("breakeven", False)),
                     "management_stop": float(setup.get("management_stop", clean_plan["stop_loss"])),
                     "exit_warning": bool(setup.get("exit_warning", False)),
+                    "exit_risk_stage": int(max(0, min(3, int(setup.get("exit_risk_stage", 1 if setup.get("exit_warning") else 0))))),
+                    "last_exit_reasons": [str(value) for value in setup.get("last_exit_reasons", [])[:8]],
                     "tactical": bool(setup.get("tactical", False)),
                     "origin_interval": str(setup.get("origin_interval", "")),
                     "signal_id": str(setup.get("signal_id", "")),
@@ -320,6 +322,7 @@ def validate_state(
                     "sent_at": float(item["sent_at"]), "status": status,
                     "tp1_hit": bool(item.get("tp1_hit", False)), "tp2_hit": bool(item.get("tp2_hit", False)),
                     "tp3_hit": bool(item.get("tp3_hit", False)), "closed_at": float(item.get("closed_at", 0.0)),
+                    "exit_reason": str(item.get("exit_reason", "")),
                 })
             except (KeyError, TypeError, ValueError):
                 continue

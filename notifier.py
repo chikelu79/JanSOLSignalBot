@@ -455,6 +455,7 @@ def evaluate_early_opportunity_alert(
                 "side": side, "plan": plan, "created_at": now,
                 "tp1": False, "tp2": False, "breakeven": False,
                 "management_stop": plan.stop_loss, "exit_warning": False,
+                "exit_risk_stage": 0, "last_exit_reasons": [],
                 "tactical": True, "origin_interval": interval,
                 "signal_id": signal_id,
             }
@@ -775,6 +776,7 @@ def evaluate_armed_trade_plan_alert(signal: MarketSignal, context: Any | None = 
                 "side": side, "plan": managed_plan, "created_at": now,
                 "tp1": False, "tp2": False, "breakeven": False,
                 "management_stop": managed_plan.stop_loss, "exit_warning": False,
+                "exit_risk_stage": 0, "last_exit_reasons": [],
                 "tactical": True, "origin_interval": str(plan["interval"]),
                 "signal_id": plan["signal_id"],
             }
@@ -1446,6 +1448,8 @@ def build_active_setups_message() -> str:
             progress.append("breakeven protection prompted")
         if state.get("exit_warning"):
             progress.append("40% reduction warning sent")
+        if int(state.get("exit_risk_stage", 0)):
+            progress.append(f"exit-risk stage {int(state.get('exit_risk_stage', 0))}/3")
         lines.extend(
             [
                 "",
@@ -1458,6 +1462,7 @@ def build_active_setups_message() -> str:
                 f"TP2: {price_text(plan.get('tp2'))}",
                 f"TP3: {price_text(plan.get('tp3'))}",
                 f"Progress: {', '.join(progress) if progress else 'Entry active; no milestone recorded'}",
+                f"Latest exit risks: {', '.join(state.get('last_exit_reasons', [])) if state.get('last_exit_reasons') else 'none detected'}",
             ]
         )
     lines.extend(
@@ -1587,7 +1592,9 @@ def build_alert_message(
         "TP2": f"📈 {signal.symbol} TP2 REACHED",
         "TP3": f"🏁 {signal.symbol} TP3 REACHED",
         "INVALIDATED": f"❌ {signal.symbol} SETUP INVALIDATED",
+        "EXIT_WATCH": f"👁 {signal.symbol} SMART EXIT WATCH",
         "EXIT_40": f"⚠️ {signal.symbol} SMART EXIT — REDUCE 40%",
+        "EXIT_HIGH": f"🚨 {signal.symbol} SMART EXIT — HIGH RISK",
         "PROTECTED_STOP": f"🛡 {signal.symbol} PROTECTED STOP REACHED",
         "EXIT": f"🚪 {signal.symbol} EXIT CONDITION",
         "RAPID_CHANGE": f"⚡ {signal.symbol} RAPID MARKET CHANGE",
@@ -2113,7 +2120,7 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
                 _clear_setup(symbol)
                 return _decision(signal, context, "EXIT", "Direction reversed", "The model turned materially bullish; reassess or exit the remaining position.", MANAGEMENT_COOLDOWN_SECONDS)
 
-        if context is not None and not state.get("exit_warning"):
+        if context is not None:
             adverse: list[str] = []
             funding = float(getattr(context, "funding_rate", 0.0))
             oi_change = float(getattr(context, "open_interest_change_1h", 0.0))
@@ -2133,11 +2140,46 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
                 adverse.append("macro bias opposes the position")
             if (side == "LONG" and news_label == "BEARISH") or (side == "SHORT" and news_label == "BULLISH"):
                 adverse.append("news intelligence opposes the position")
-            if len(adverse) >= 3:
-                state["exit_warning"] = True
+            origin_interval = str(state.get("origin_interval", ""))
+            technical = signal.analyses.get(origin_interval) if origin_interval else None
+            if technical is None:
+                profile = get_profile(get_trading_horizon(), get_risk_style())
+                technical = next((signal.analyses.get(interval) for interval in profile.primary_timeframes if signal.analyses.get(interval) is not None), None)
+            if technical is not None:
+                clues = [
+                    str(value).lower()
+                    for value in (
+                        list(getattr(technical, "candle_patterns", []))
+                        + list(getattr(technical, "divergences", []))
+                    )
+                ]
+                bearish_turn = (
+                    any("bearish" in clue for clue in clues)
+                    or (float(getattr(technical, "macd", 0.0)) < float(getattr(technical, "macd_signal", 0.0)) and float(getattr(technical, "macd_histogram", 0.0)) < 0)
+                    or float(getattr(technical, "rsi_6", 50.0)) < float(getattr(technical, "rsi_12", 50.0)) < float(getattr(technical, "rsi_24", 50.0))
+                )
+                bullish_turn = (
+                    any("bullish" in clue for clue in clues)
+                    or (float(getattr(technical, "macd", 0.0)) > float(getattr(technical, "macd_signal", 0.0)) and float(getattr(technical, "macd_histogram", 0.0)) > 0)
+                    or float(getattr(technical, "rsi_6", 50.0)) > float(getattr(technical, "rsi_12", 50.0)) > float(getattr(technical, "rsi_24", 50.0))
+                )
+                if (side == "LONG" and bearish_turn) or (side == "SHORT" and bullish_turn):
+                    adverse.append("the origin timeframe shows a technical reversal")
+            current_stage = int(state.get("exit_risk_stage", 1 if state.get("exit_warning") else 0))
+            target_stage = 3 if len(adverse) >= 5 else 2 if len(adverse) >= 3 else 1 if len(adverse) >= 2 else 0
+            if target_stage > current_stage:
+                state["exit_risk_stage"] = target_stage
+                state["exit_warning"] = target_stage >= 2
+                state["last_exit_reasons"] = adverse[:6]
                 _persist_setup(symbol, state)
-                detail = "; ".join(adverse[:4])
-                return _decision(signal, context, "EXIT_40", "Multiple exit risks aligned", f"Consider reducing 40% and tightening protection because {detail}.", MANAGEMENT_COOLDOWN_SECONDS)
+                detail = "; ".join(adverse[:6])
+                if state.get("signal_id"):
+                    update_signal_performance(state["signal_id"], exit_reason=detail)
+                if target_stage == 1:
+                    return _decision(signal, context, "EXIT_WATCH", "Exit risk is building", f"Two adverse factors are developing: {detail}. Monitor closely and avoid adding risk.", MANAGEMENT_COOLDOWN_SECONDS)
+                if target_stage == 2:
+                    return _decision(signal, context, "EXIT_40", "Multiple exit risks aligned", f"Consider reducing 40% and tightening protection because {detail}.", MANAGEMENT_COOLDOWN_SECONDS)
+                return _decision(signal, context, "EXIT_HIGH", "Exit risk escalated", f"Five or more adverse factors now align: {detail}. Consider protecting or closing the remainder rather than waiting for the original stop.", MANAGEMENT_COOLDOWN_SECONDS)
 
     if prior_score is not None and abs(adjusted - prior_score) >= RAPID_SCORE_CHANGE:
         return _decision(signal, context, "RAPID_CHANGE", "Rapid score change", "Pause and reassess; market conditions changed quickly.", RAPID_CHANGE_COOLDOWN_SECONDS)
@@ -2191,6 +2233,8 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
             "breakeven": False,
             "management_stop": signal.trade_plan.stop_loss,
             "exit_warning": False,
+            "exit_risk_stage": 0,
+            "last_exit_reasons": [],
             "tactical": False,
             "origin_interval": "",
             "signal_id": signal_id,

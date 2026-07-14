@@ -547,8 +547,8 @@ def main() -> None:
         "management_stop": plan.stop_loss, "exit_warning": False,
     }
     smart_exit = evaluate_signal_alert(signal, adverse_context)
-    assert smart_exit.alert_type == "EXIT_40"
-    assert "REDUCE 40%" in smart_exit.message
+    assert smart_exit.alert_type == "EXIT_HIGH"
+    assert "SMART EXIT — HIGH RISK" in smart_exit.message
     remove_active_setup(signal.symbol)
     setup_states.pop(signal.symbol, None)
     signal.price = 103.1
