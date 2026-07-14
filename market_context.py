@@ -241,10 +241,20 @@ async def fetch_json(
     )
 
 
+def calculate_coinbase_premium(coinbase_mid: float, okx_usdt_mid: float, usdt_usd_mid: float) -> float:
+    okx_usd_mid = okx_usdt_mid * usdt_usd_mid
+    if coinbase_mid <= 0 or okx_usd_mid <= 0:
+        raise ValueError("Premium inputs must be positive")
+    return (coinbase_mid / okx_usd_mid - 1.0) * 100.0
+
+
 async def fetch_coinbase_premiums() -> dict[str, Any]:
     cached = COINBASE_PREMIUM_CACHE.get("data")
     if isinstance(cached, dict) and time.time() - float(COINBASE_PREMIUM_CACHE.get("timestamp", 0.0)) < COINBASE_PREMIUM_CACHE_SECONDS:
         return dict(cached)
+
+    usdt_ticker = await fetch_json("https://api.exchange.coinbase.com/products/USDT-USD/ticker")
+    usdt_usd_mid = (float(usdt_ticker["bid"]) + float(usdt_ticker["ask"])) / 2.0
 
     async def premium(asset: str) -> float:
         coinbase, okx = await asyncio.gather(
@@ -256,12 +266,13 @@ async def fetch_coinbase_premiums() -> dict[str, Any]:
             raise RuntimeError(f"OKX returned no {asset} spot ticker")
         coinbase_mid = (float(coinbase["bid"]) + float(coinbase["ask"])) / 2.0
         okx_mid = (float(okx_rows[0]["bidPx"]) + float(okx_rows[0]["askPx"])) / 2.0
-        if okx_mid <= 0:
-            raise RuntimeError(f"Invalid OKX {asset} midpoint")
-        return (coinbase_mid / okx_mid - 1.0) * 100.0
+        return calculate_coinbase_premium(coinbase_mid, okx_mid, usdt_usd_mid)
 
     btc, eth = await asyncio.gather(premium("BTC"), premium("ETH"))
-    result = {"btc": round(btc, 4), "eth": round(eth, 4), "live": True}
+    result = {
+        "btc": round(btc, 4), "eth": round(eth, 4),
+        "usdt_usd": round(usdt_usd_mid, 6), "live": True,
+    }
     COINBASE_PREMIUM_CACHE.update({"data": dict(result), "timestamp": time.time()})
     return result
 

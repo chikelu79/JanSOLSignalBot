@@ -9,7 +9,7 @@ from bot_state import get_active_setups, get_early_opportunities, remove_active_
 from economic_calendar import build_calendar_message, get_economic_risk
 from news_intelligence import build_news_message
 from lunar_context import get_lunar_context
-from market_context import build_market_context
+from market_context import build_market_context, calculate_coinbase_premium
 from notifier import (
     build_active_setups_message,
     build_balanced_evidence,
@@ -30,6 +30,8 @@ from trading_profile import estimate_position, get_profile
 
 
 def main() -> None:
+    normalized_premium = calculate_coinbase_premium(100.0, 100.1, 0.999)
+    assert abs(normalized_premium - 0.0001) < 0.001
     conservative_scalp = get_profile("SCALPING", "CONSERVATIVE")
     assert conservative_scalp.watch_threshold == 68.0
     assert conservative_scalp.weights["5m"] == 0.30
@@ -130,7 +132,7 @@ def main() -> None:
             previous_stoch_rsi_k=12.0, previous_stoch_rsi_d=15.0,
             stoch_rsi_k=24.0, stoch_rsi_d=18.0,
             two_back_mfi=35.0, previous_mfi=33.0, mfi=39.0,
-            relative_volume=1.0,
+            relative_volume=1.5,
             ema20=74.8, vwap=75.0, support=73.5, resistance=76.0,
         ),
         "1h": SimpleNamespace(score=-35.0),
@@ -142,7 +144,7 @@ def main() -> None:
     assert "RSI 6 crossed above RSI 12" in radar[1]
     assert "Stochastic RSI crossed bullish from oversold" in radar[1]
     assert "MFI money flow turned upward" in radar[1]
-    signal.price = 74.9
+    signal.price = 75.1
     early_alert = evaluate_early_opportunity_alert(
         signal,
         derivatives={"taker_flow_imbalance": 20.0, "large_flow_imbalance": 40.0},
@@ -157,6 +159,15 @@ def main() -> None:
     stored_key = "TESTUSDT:5m:LONG"
     assert stored_key in get_early_opportunities()
     remove_early_opportunity(stored_key)
+    signal.symbol = "WEAKUSDT"
+    signal.analyses["5m"].relative_volume = 0.5
+    weak_countertrend_alert = evaluate_early_opportunity_alert(
+        signal,
+        derivatives={"taker_flow_imbalance": 20.0, "large_flow_imbalance": 40.0},
+    )
+    assert not weak_countertrend_alert.should_send
+    remove_early_opportunity("WEAKUSDT:5m:LONG")
+    signal.symbol = "TESTUSDT"
     tiny_cross = signal.analyses["5m"]
     tiny_cross.previous_macd = tiny_cross.macd = 0.1
     tiny_cross.previous_macd_signal = tiny_cross.macd_signal = 0.0

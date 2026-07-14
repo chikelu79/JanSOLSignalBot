@@ -361,12 +361,17 @@ def evaluate_early_opportunity_alert(
         large_support = (side == "LONG" and large_flow >= 30.0) or (side == "SHORT" and large_flow <= -30.0)
         taker_opposes = (side == "LONG" and taker_flow <= -15.0) or (side == "SHORT" and taker_flow >= 15.0)
         large_opposes = (side == "LONG" and large_flow <= -30.0) or (side == "SHORT" and large_flow >= 30.0)
-        weak_and_strongly_opposed = analysis.relative_volume < profile.volume_confirmation and taker_opposes and large_opposes
-        if distance <= 1.0 and not weak_and_strongly_opposed:
-            watch_candidates.append((distance, opportunity_key, opportunity))
         countertrend = opportunity.get("relationship") == "COUNTERTREND"
         required_volume = profile.volume_confirmation * (1.15 if countertrend else 1.0)
         flow_confirmed = (taker_support and large_support) if countertrend else (taker_support or large_support)
+        weak_and_strongly_opposed = analysis.relative_volume < profile.volume_confirmation and taker_opposes and large_opposes
+        proactive_ready = (
+            analysis.relative_volume >= required_volume and flow_confirmed
+            if countertrend
+            else not weak_and_strongly_opposed
+        )
+        if distance <= 1.0 and proactive_ready:
+            watch_candidates.append((distance, opportunity_key, opportunity))
         if not active and inside and analysis.relative_volume >= required_volume and flow_confirmed:
             economic = get_economic_risk()
             if economic.block_new_entries:
