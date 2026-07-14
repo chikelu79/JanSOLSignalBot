@@ -333,13 +333,20 @@ def evaluate_early_opportunity_alert(
         relationship = "COUNTERTREND" if "COUNTERTREND" in line else "TREND-ALIGNED" if "TREND-ALIGNED" in line else "MIXED-TREND"
         opportunity_key = f"{signal.symbol}:{interval}:{side}"
         triggers = block[1].removeprefix("Trigger: ").split(", ") if len(block) > 1 else []
+        invalidation = analysis.support if side == "LONG" else analysis.resistance
+        midpoint = (zone_low + zone_high) / 2.0
+        risk = midpoint - invalidation if side == "LONG" else invalidation - midpoint
+        direction = 1.0 if side == "LONG" else -1.0
         set_early_opportunity(opportunity_key, {
             "symbol": signal.symbol, "interval": interval, "side": side,
             "zone_low": zone_low, "zone_high": zone_high,
-            "invalidation": analysis.support if side == "LONG" else analysis.resistance,
+            "invalidation": invalidation,
             "created_at": now, "expires_at": now + expiry_seconds,
             "relationship": relationship, "triggers": triggers,
             "zone_reached": False,
+            "target_1r": midpoint + direction * risk if risk > 0 else 0.0,
+            "target_2r": midpoint + direction * risk * 2.0 if risk > 0 else 0.0,
+            "target_1r_hit": False, "target_2r_hit": False,
         })
         fresh_blocks[opportunity_key] = block
 
@@ -369,6 +376,22 @@ def evaluate_early_opportunity_alert(
             opportunity["zone_reached"] = True
             set_early_opportunity(opportunity_key, opportunity)
             record_early_opportunity_outcome(opportunity, "ZONE_REACHED", signal.price, now)
+        if bool(opportunity.get("zone_reached", False)):
+            target_1r = float(opportunity.get("target_1r", 0.0))
+            target_2r = float(opportunity.get("target_2r", 0.0))
+            hit_1r = target_1r > 0 and ((side == "LONG" and signal.price >= target_1r) or (side == "SHORT" and signal.price <= target_1r))
+            hit_2r = target_2r > 0 and ((side == "LONG" and signal.price >= target_2r) or (side == "SHORT" and signal.price <= target_2r))
+            changed = False
+            if hit_1r and not bool(opportunity.get("target_1r_hit", False)):
+                opportunity["target_1r_hit"] = True
+                changed = True
+                record_early_opportunity_outcome(opportunity, "TARGET_1R", signal.price, now)
+            if hit_2r and not bool(opportunity.get("target_2r_hit", False)):
+                opportunity["target_2r_hit"] = True
+                changed = True
+                record_early_opportunity_outcome(opportunity, "TARGET_2R", signal.price, now)
+            if changed:
+                set_early_opportunity(opportunity_key, opportunity)
         distance = 0.0 if inside else min(abs(signal.price - zone_low), abs(signal.price - zone_high)) / max(signal.price, 1e-9) * 100.0
         taker_support = (side == "LONG" and taker_flow >= 15.0) or (side == "SHORT" and taker_flow <= -15.0)
         large_support = (side == "LONG" and large_flow >= 30.0) or (side == "SHORT" and large_flow <= -30.0)
@@ -463,12 +486,14 @@ def evaluate_early_opportunity_alert(
 def build_radar_stats_message() -> str:
     active = list(get_early_opportunities().values())
     outcomes = get_early_opportunity_outcomes()
-    counts = {status: sum(item.get("status") == status for item in outcomes) for status in ("ZONE_REACHED", "CONFIRMED", "INVALIDATED", "EXPIRED")}
+    counts = {status: sum(item.get("status") == status for item in outcomes) for status in ("ZONE_REACHED", "TARGET_1R", "TARGET_2R", "CONFIRMED", "INVALIDATED", "EXPIRED")}
     lines = [
         "📈 OPPORTUNITY RADAR TRACKING",
         "",
         f"Active watches: {len(active)}",
         f"Decision zones reached: {counts['ZONE_REACHED']}",
+        f"Hypothetical 1R reached: {counts['TARGET_1R']}",
+        f"Hypothetical 2R reached: {counts['TARGET_2R']}",
         f"Confirmed tactical entries: {counts['CONFIRMED']}",
         f"Invalidated: {counts['INVALIDATED']}",
         f"Expired without confirmation: {counts['EXPIRED']}",

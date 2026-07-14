@@ -218,6 +218,10 @@ def validate_state(
                     "relationship": str(item.get("relationship", "MIXED-TREND")),
                     "triggers": [str(value) for value in item.get("triggers", [])][:8],
                     "zone_reached": bool(item.get("zone_reached", False)),
+                    "target_1r": float(item.get("target_1r", 0.0)),
+                    "target_2r": float(item.get("target_2r", 0.0)),
+                    "target_1r_hit": bool(item.get("target_1r_hit", False)),
+                    "target_2r_hit": bool(item.get("target_2r_hit", False)),
                 }
             except (KeyError, TypeError, ValueError):
                 continue
@@ -231,7 +235,7 @@ def validate_state(
                 continue
             try:
                 status = str(item["status"]).upper()
-                if status not in {"ZONE_REACHED", "CONFIRMED", "INVALIDATED", "EXPIRED"}:
+                if status not in {"ZONE_REACHED", "TARGET_1R", "TARGET_2R", "CONFIRMED", "INVALIDATED", "EXPIRED"}:
                     continue
                 validated_outcomes.append({
                     "symbol": normalize_symbol(str(item["symbol"])),

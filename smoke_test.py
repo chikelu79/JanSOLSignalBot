@@ -162,9 +162,14 @@ def main() -> None:
     radar_stats = build_radar_stats_message()
     assert "OPPORTUNITY RADAR TRACKING" in radar_stats
     assert "Active watches:" in radar_stats
+    assert "Hypothetical 1R reached:" in radar_stats
+    assert "Hypothetical 2R reached:" in radar_stats
     assert "Confirmed tactical entries:" in radar_stats
     stored_key = "TESTUSDT:5m:LONG"
     assert stored_key in get_early_opportunities()
+    stored_watch = get_early_opportunities()[stored_key]
+    assert stored_watch["target_1r"] > stored_watch["zone_high"]
+    assert stored_watch["target_2r"] > stored_watch["target_1r"]
     remove_early_opportunity(stored_key)
     signal.symbol = "WEAKUSDT"
     signal.analyses["5m"].relative_volume = 0.5
