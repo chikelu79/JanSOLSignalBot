@@ -1,6 +1,7 @@
 """Offline structural smoke test. It does not contact Binance or Telegram."""
 
 from dataclasses import asdict
+from types import SimpleNamespace
 
 from bot_state import get_active_setups, remove_active_setup, set_active_setup
 from market_context import build_market_context
@@ -8,12 +9,36 @@ from notifier import (
     build_active_setups_message,
     build_confidence_breakdown,
     build_scan_message,
+    evaluate_derivatives_alert,
     evaluate_signal_alert,
+    setup_states,
 )
-from strategy import MarketSignal, TradePlan
+from strategy import MarketSignal, TradePlan, create_trade_plan
 
 
 def main() -> None:
+    structural_analysis = SimpleNamespace(
+        atr=2.0,
+        support=95.0,
+        resistance=105.0,
+        ema20=98.0,
+        ema50=96.0,
+        vwap=97.0,
+        bollinger_middle=97.5,
+    )
+    structural_long = create_trade_plan(
+        "LONG",
+        100.0,
+        {"15m": structural_analysis},
+    )
+    structural_short = create_trade_plan(
+        "SHORT",
+        100.0,
+        {"15m": structural_analysis},
+    )
+    assert structural_long is not None and structural_long.entry_high < 100.0
+    assert structural_short is not None and structural_short.entry_low > 100.0
+
     plan = TradePlan(
         side="LONG",
         entry_low=99.0,
@@ -34,7 +59,7 @@ def main() -> None:
         stage="WATCH",
         score=65.0,
         confidence=65,
-        price=98.0,
+        price=100.5,
         bullish_timeframes=4,
         bearish_timeframes=0,
         neutral_timeframes=2,
@@ -75,6 +100,20 @@ def main() -> None:
     assert "Fear & Greed: 62" in message
     assert "Funding: +0.0600% (CROWDED LONGS, Offline test)" in message
     assert "OI change: +1.20% (5m), +6.50% (1h)" in message
+    derivatives_alert = evaluate_derivatives_alert(
+        signal,
+        {
+            "funding_rate": 0.0006,
+            "funding_label": "CROWDED LONGS",
+            "open_interest_value": 250000000.0,
+            "open_interest_change_5m": 1.2,
+            "open_interest_change_1h": 6.5,
+            "provider": "Offline test",
+            "live": True,
+        },
+    )
+    assert derivatives_alert.should_send
+    assert derivatives_alert.alert_type == "FUNDING_CROWDING"
     assert "Execution status: WATCH" in message
     assert "CONFIDENCE BREAKDOWN" in message
     assert "Risk:" in message
@@ -96,6 +135,29 @@ def main() -> None:
     remove_active_setup(signal.symbol)
     assert signal.symbol not in get_active_setups()
     assert "None" in build_active_setups_message()
+    setup_states[signal.symbol] = {
+        "side": "LONG",
+        "plan": plan,
+        "created_at": 1.0,
+        "tp1": False,
+        "tp2": False,
+        "breakeven": False,
+    }
+    exit_alert = evaluate_derivatives_alert(
+        signal,
+        {
+            "funding_rate": 0.0011,
+            "funding_label": "EXTREME LONGS",
+            "open_interest_value": 250000000.0,
+            "open_interest_change_5m": -6.0,
+            "open_interest_change_1h": -9.0,
+            "provider": "Offline test",
+            "live": True,
+        },
+    )
+    assert exit_alert.should_send
+    assert exit_alert.alert_type == "DERIVATIVES_EXIT"
+    setup_states.pop(signal.symbol, None)
     signal.trade_plan = None
     breakdown = build_confidence_breakdown(signal, context)
     assert "Risk: N/A — no active setup" in breakdown

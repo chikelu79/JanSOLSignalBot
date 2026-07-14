@@ -15,6 +15,8 @@ ENTRY_COOLDOWN_SECONDS = 45 * 60
 MANAGEMENT_COOLDOWN_SECONDS = 10 * 60
 DO_NOT_CHASE_COOLDOWN_SECONDS = 20 * 60
 RAPID_CHANGE_COOLDOWN_SECONDS = 15 * 60
+DERIVATIVES_ALERT_COOLDOWN_SECONDS = 30 * 60
+DERIVATIVES_EXIT_COOLDOWN_SECONDS = 15 * 60
 RAPID_SCORE_CHANGE = 22.0
 
 last_alert_times: dict[str, float] = {}
@@ -370,26 +372,26 @@ def execution_status(signal: MarketSignal) -> tuple[str, str]:
 
     price = signal.price
     width = max(plan.entry_high - plan.entry_low, plan.risk_per_unit * 0.10)
-    chase_buffer = max(width * 1.5, price * 0.0035)
+    approach_buffer = max(width * 3.0, price * 0.01)
 
     if plan.side == "LONG":
-        if price < plan.entry_low:
-            distance = (plan.entry_low - price) / max(price, 1e-9) * 100
-            return "WATCH", f"Price is {distance:.2f}% below the planned long zone. Let it come to the level."
+        if price > plan.entry_high:
+            distance = (price - plan.entry_high) / max(price, 1e-9) * 100
+            if price <= plan.entry_high + approach_buffer:
+                return "WATCH", f"Price is {distance:.2f}% above the long pullback zone. Wait for price to come to the level."
+            return "DO NOT CHASE", "Price remains too far above the planned long zone. Wait for the structural pullback."
         if plan.entry_low <= price <= plan.entry_high:
             return "PREPARE", "Price is inside the long entry zone. Wait for candle and volume confirmation."
-        if price <= plan.entry_high + chase_buffer:
-            return "LATE", "Price is just beyond the zone. Enter only after a clean retest, not at market."
-        return "DO NOT CHASE", "Price moved too far above the planned entry. Wait for a pullback or a new setup."
+        return "DO NOT CHASE", "Price traded below the long zone. Wait for a reclaim or a newly calculated setup."
 
-    if price > plan.entry_high:
-        distance = (price - plan.entry_high) / max(price, 1e-9) * 100
-        return "WATCH", f"Price is {distance:.2f}% above the planned short zone. Let it come to the level."
+    if price < plan.entry_low:
+        distance = (plan.entry_low - price) / max(price, 1e-9) * 100
+        if price >= plan.entry_low - approach_buffer:
+            return "WATCH", f"Price is {distance:.2f}% below the short bounce zone. Wait for price to come to the level."
+        return "DO NOT CHASE", "Price remains too far below the planned short zone. Wait for the structural bounce."
     if plan.entry_low <= price <= plan.entry_high:
         return "PREPARE", "Price is inside the short entry zone. Wait for rejection and volume confirmation."
-    if price >= plan.entry_low - chase_buffer:
-        return "LATE", "Price is just beyond the zone. Enter only after a clean retest, not at market."
-    return "DO NOT CHASE", "Price moved too far below the planned entry. Wait for a bounce or a new setup."
+    return "DO NOT CHASE", "Price traded above the short zone. Wait for rejection or a newly calculated setup."
 
 
 def build_scan_message(signal: MarketSignal, context: Any | None = None) -> str:
@@ -495,6 +497,129 @@ def build_alert_message(
     return "\n".join(lines)
 
 
+def build_derivatives_alert_message(
+    signal: MarketSignal,
+    derivatives: dict[str, Any],
+    alert_type: str,
+    action: str,
+) -> str:
+    headings = {
+        "FUNDING_CROWDING": f"⚠️ {signal.symbol} FUNDING CROWDING",
+        "OI_SURGE": f"⚡ {signal.symbol} OPEN INTEREST SURGE",
+        "OI_DIVERGENCE": f"🔀 {signal.symbol} PRICE / OI DIVERGENCE",
+        "DERIVATIVES_EXIT": f"🚪 {signal.symbol} DERIVATIVES EXIT WARNING",
+    }
+    return "\n".join(
+        [
+            headings.get(alert_type, f"⚠️ {signal.symbol} DERIVATIVES ALERT"),
+            "",
+            f"Price: {price_text(signal.price)}",
+            f"Technical direction: {signal.direction}",
+            f"Funding: {float(derivatives.get('funding_rate', 0.0)) * 100:+.4f}% "
+            f"({derivatives.get('funding_label', 'UNKNOWN')})",
+            f"Open interest: ${float(derivatives.get('open_interest_value', 0.0)):,.0f}",
+            f"OI change: {float(derivatives.get('open_interest_change_5m', 0.0)):+.2f}% (5m), "
+            f"{float(derivatives.get('open_interest_change_1h', 0.0)):+.2f}% (1h)",
+            f"Provider: {derivatives.get('provider', 'UNKNOWN')}",
+            "",
+            f"Action: {action}",
+            "",
+            "Decision support only. Confirm price structure before acting.",
+        ]
+    )
+
+
+def evaluate_derivatives_alert(
+    signal: MarketSignal,
+    derivatives: dict[str, Any] | None,
+) -> AlertDecision:
+    symbol = signal.symbol.upper()
+    if not derivatives or not derivatives.get("live"):
+        return AlertDecision(False, "NONE", symbol, "", "Derivatives data unavailable")
+
+    funding = float(derivatives.get("funding_rate", 0.0))
+    oi_5m = float(derivatives.get("open_interest_change_5m", 0.0))
+    oi_1h = float(derivatives.get("open_interest_change_1h", 0.0))
+    active = setup_states.get(symbol)
+
+    if active:
+        side = active["side"]
+        adverse_funding = (
+            (side == "LONG" and funding >= 0.001)
+            or (side == "SHORT" and funding <= -0.001)
+        )
+        deleveraging = oi_5m <= -5.0 or oi_1h <= -8.0
+        if adverse_funding or deleveraging:
+            key = make_alert_key(symbol, "DERIVATIVES_EXIT", side)
+            if alert_allowed(key, DERIVATIVES_EXIT_COOLDOWN_SECONDS):
+                mark_alert_sent(key)
+                action = (
+                    "Crowded funding or rapid deleveraging is working against the managed setup. "
+                    "Consider reducing exposure or tightening protection; verify on the exchange."
+                )
+                return AlertDecision(
+                    True,
+                    "DERIVATIVES_EXIT",
+                    symbol,
+                    build_derivatives_alert_message(signal, derivatives, "DERIVATIVES_EXIT", action),
+                    "Derivatives conditions deteriorated against an active setup",
+                )
+
+    if abs(funding) >= 0.0005:
+        key = make_alert_key(symbol, "FUNDING_CROWDING")
+        if alert_allowed(key, DERIVATIVES_ALERT_COOLDOWN_SECONDS):
+            mark_alert_sent(key)
+            crowded_side = "longs" if funding > 0 else "shorts"
+            action = (
+                f"Leveraged {crowded_side} are crowded. Avoid chasing that side and watch for a squeeze."
+            )
+            return AlertDecision(
+                True,
+                "FUNDING_CROWDING",
+                symbol,
+                build_derivatives_alert_message(signal, derivatives, "FUNDING_CROWDING", action),
+                "Funding reached a crowded threshold",
+            )
+
+    if abs(oi_5m) >= 5.0 or abs(oi_1h) >= 10.0:
+        key = make_alert_key(symbol, "OI_SURGE")
+        if alert_allowed(key, DERIVATIVES_ALERT_COOLDOWN_SECONDS):
+            mark_alert_sent(key)
+            action = (
+                "Leverage is changing unusually quickly. Wait for price confirmation and expect higher liquidation risk."
+            )
+            return AlertDecision(
+                True,
+                "OI_SURGE",
+                symbol,
+                build_derivatives_alert_message(signal, derivatives, "OI_SURGE", action),
+                "Open interest changed unusually quickly",
+            )
+
+    short_term = signal.analyses.get("5m") or signal.analyses.get("15m")
+    short_score = short_term.score if short_term else signal.score
+    divergence = (
+        (short_score >= 25.0 and oi_1h <= -3.0)
+        or (short_score <= -25.0 and oi_1h >= 3.0)
+    )
+    if divergence:
+        key = make_alert_key(symbol, "OI_DIVERGENCE")
+        if alert_allowed(key, DERIVATIVES_ALERT_COOLDOWN_SECONDS):
+            mark_alert_sent(key)
+            action = (
+                "Price and leveraged positioning disagree. Treat the move as lower quality until both confirm."
+            )
+            return AlertDecision(
+                True,
+                "OI_DIVERGENCE",
+                symbol,
+                build_derivatives_alert_message(signal, derivatives, "OI_DIVERGENCE", action),
+                "Price and open interest diverged",
+            )
+
+    return AlertDecision(False, "NONE", symbol, "", "No derivatives alert condition")
+
+
 def _decision(
     signal: MarketSignal,
     context: Any | None,
@@ -585,9 +710,9 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
         return AlertDecision(False, "NONE", symbol, "", "Duplicate signal")
     if status == "WATCH":
         return _decision(signal, context, "WATCH", "Price approaching planned level", note, WATCH_COOLDOWN_SECONDS)
-    if status in {"PREPARE", "LATE"} and signal.stage not in {"CONFIRMED", "STRONG"}:
+    if status == "PREPARE" and signal.stage not in {"CONFIRMED", "STRONG"}:
         return _decision(signal, context, "PREPARE", "Price reached entry area", note, PREPARE_COOLDOWN_SECONDS)
-    if status in {"PREPARE", "LATE"} and signal.stage in {"CONFIRMED", "STRONG"}:
+    if status == "PREPARE" and signal.stage in {"CONFIRMED", "STRONG"}:
         setup_states[symbol] = {
             "side": signal.trade_plan.side,
             "plan": signal.trade_plan,

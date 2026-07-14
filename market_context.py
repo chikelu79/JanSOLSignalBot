@@ -40,6 +40,9 @@ FEAR_GREED_CACHE: dict[str, Any] = {
 FEAR_GREED_CACHE_SECONDS = 300
 FEAR_GREED_URL = "https://api.alternative.me/fng/?limit=2&format=json"
 
+DERIVATIVES_CACHE: dict[str, dict[str, Any]] = {}
+DERIVATIVES_CACHE_SECONDS = 60
+
 COINGECKO_GLOBAL_URL = (
     "https://api.coingecko.com/api/v3/global"
 )
@@ -725,7 +728,7 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
     }
 
 
-async def fetch_derivatives_context(symbol: str) -> dict[str, Any]:
+async def _fetch_derivatives_context_uncached(symbol: str) -> dict[str, Any]:
     try:
         return await _fetch_okx_derivatives_context(symbol)
     except Exception as okx_error:
@@ -741,6 +744,23 @@ async def fetch_derivatives_context(symbol: str) -> dict[str, Any]:
                 f"{type(okx_error).__name__}, {type(binance_error).__name__}"
             )
             return result
+
+
+async def fetch_derivatives_context(symbol: str) -> dict[str, Any]:
+    normalized = symbol.upper()
+    cached = DERIVATIVES_CACHE.get(normalized, {})
+    if (
+        cached.get("data") is not None
+        and time.time() - float(cached.get("timestamp", 0.0)) < DERIVATIVES_CACHE_SECONDS
+    ):
+        return dict(cached["data"])
+
+    result = await _fetch_derivatives_context_uncached(normalized)
+    DERIVATIVES_CACHE[normalized] = {
+        "data": dict(result),
+        "timestamp": time.time(),
+    }
+    return result
 
 
 # =========================================================

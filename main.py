@@ -30,6 +30,7 @@ from notifier import (
     build_active_setups_message,
     build_scan_message,
     evaluate_signal_alert,
+    evaluate_derivatives_alert,
     price_text,
 )
 from strategy import (
@@ -47,6 +48,7 @@ try:
     MarketContext,
     build_market_context,
     get_market_context_data,
+    fetch_derivatives_context,
 )
 
     MARKET_CONTEXT_AVAILABLE = True
@@ -59,6 +61,9 @@ except ImportError:
         selected_signal: MarketSignal,
         context_data: dict[str, Any],
     ) -> None:
+        return None
+
+    async def fetch_derivatives_context(symbol: str) -> dict[str, Any] | None:
         return None
 
 
@@ -1237,7 +1242,20 @@ async def monitor_one_symbol(
                 macro_context,
             )
 
-            if decision.should_send:
+            derivatives_data = None
+            try:
+                derivatives_data = await fetch_derivatives_context(symbol)
+            except Exception:
+                logger.exception("Derivatives monitoring failed for %s.", symbol)
+
+            derivatives_decision = evaluate_derivatives_alert(
+                signal,
+                derivatives_data,
+            )
+
+            for alert_decision in (decision, derivatives_decision):
+                if not alert_decision.should_send:
+                    continue
                 destination = (
                     get_destination_chat_id()
                 )
@@ -1245,16 +1263,16 @@ async def monitor_one_symbol(
                 if destination:
                     await application.bot.send_message(
                         chat_id=destination,
-                        text=decision.message[
+                        text=alert_decision.message[
                             :TELEGRAM_MESSAGE_LIMIT
                         ],
                     )
 
                     logger.info(
                         "Sent %s alert for %s: %s",
-                        decision.alert_type,
+                        alert_decision.alert_type,
                         symbol,
-                        decision.reason,
+                        alert_decision.reason,
                     )
 
                 else:

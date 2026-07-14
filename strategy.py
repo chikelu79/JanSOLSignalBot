@@ -1388,37 +1388,41 @@ def create_trade_plan(
     if is_bullish_direction(
         direction
     ):
-        support_candidates = [
-            analysis.support
-            for analysis in analyses.values()
-            if (
-                analysis.support > 0
-                and analysis.support < price
+        support_candidates: list[float] = []
+        for interval in ("5m", "15m", "1h", "4h"):
+            analysis = analyses.get(interval)
+            if analysis is None:
+                continue
+            support_candidates.extend(
+                level
+                for level in (
+                    analysis.support,
+                    analysis.ema20,
+                    analysis.ema50,
+                    analysis.vwap,
+                    analysis.bollinger_middle,
+                )
+                if (
+                    level > 0
+                    and level < price
+                    and price - level <= atr * 4.0
+                )
             )
-        ]
 
         nearest_support = (
             max(
                 support_candidates
             )
             if support_candidates
-            else price - atr
+            else price - atr * 0.75
         )
 
-        entry_low = (
-            price
-            - atr * 0.20
-        )
-
-        entry_high = (
-            price
-            + atr * 0.10
-        )
+        entry_low = max(0.00000001, nearest_support - atr * 0.15)
+        entry_high = min(price, nearest_support + atr * 0.15)
 
         atr_stop = (
-            price
-            - atr
-            * ATR_STOP_MULTIPLIER
+            entry_low
+            - atr * ATR_STOP_MULTIPLIER
         )
 
         structural_stop = (
@@ -1486,36 +1490,40 @@ def create_trade_plan(
     # SHORT PLAN
     # =====================================================
 
-    resistance_candidates = [
-        analysis.resistance
-        for analysis in analyses.values()
-        if (
-            analysis.resistance > price
+    resistance_candidates: list[float] = []
+    for interval in ("5m", "15m", "1h", "4h"):
+        analysis = analyses.get(interval)
+        if analysis is None:
+            continue
+        resistance_candidates.extend(
+            level
+            for level in (
+                analysis.resistance,
+                analysis.ema20,
+                analysis.ema50,
+                analysis.vwap,
+                analysis.bollinger_middle,
+            )
+            if (
+                level > price
+                and level - price <= atr * 4.0
+            )
         )
-    ]
 
     nearest_resistance = (
         min(
             resistance_candidates
         )
         if resistance_candidates
-        else price + atr
+        else price + atr * 0.75
     )
 
-    entry_low = (
-        price
-        - atr * 0.10
-    )
-
-    entry_high = (
-        price
-        + atr * 0.20
-    )
+    entry_low = max(price, nearest_resistance - atr * 0.15)
+    entry_high = nearest_resistance + atr * 0.15
 
     atr_stop = (
-        price
-        + atr
-        * ATR_STOP_MULTIPLIER
+        entry_high
+        + atr * ATR_STOP_MULTIPLIER
     )
 
     structural_stop = (
