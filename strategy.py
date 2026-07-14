@@ -1082,6 +1082,7 @@ def determine_confirmation(
     analyses: dict[str, TimeframeSignal],
 ) -> tuple[bool, list[str]]:
     profile = active_profile()
+    primary_text = " and ".join(profile.primary_timeframes)
     warnings: list[str] = []
 
     bullish_bias = overall_score >= 0
@@ -1124,7 +1125,7 @@ def determine_confirmation(
 
         if not short_term_aligned:
             warnings.append(
-                f"The {', '.join(profile.primary_timeframes)} profile timeframes are not fully aligned bullish."
+                f"The {primary_text} profile timeframes are not fully aligned bullish."
             )
 
         if higher_timeframe_count < profile.higher_timeframe_count:
@@ -1179,7 +1180,7 @@ def determine_confirmation(
 
     if not short_term_aligned:
         warnings.append(
-            f"The {', '.join(profile.primary_timeframes)} profile timeframes are not fully aligned bearish."
+            f"The {primary_text} profile timeframes are not fully aligned bearish."
         )
 
     if higher_timeframe_count < profile.higher_timeframe_count:
@@ -1208,16 +1209,15 @@ def collect_supporting_reasons(
 ) -> list[str]:
     collected: list[str] = []
 
-    preferred_intervals = [
-        "15m",
-        "1h",
-        "4h",
-        "8h",
-        "1d",
-        "5m",
+    profile = active_profile()
+    profile_order = list(profile.primary_timeframes + profile.confirmation_timeframes)
+    preferred_intervals = profile_order + [
+        interval for interval in ("5m", "15m", "1h", "4h", "8h", "1d")
+        if interval not in profile_order
     ]
 
     bullish_bias = overall_score >= 0
+    mixed_wait = abs(overall_score) < profile.watch_threshold
 
     for interval in preferred_intervals:
         analysis = analyses.get(
@@ -1227,7 +1227,7 @@ def collect_supporting_reasons(
         if analysis is None:
             continue
 
-        supports_direction = (
+        supports_direction = mixed_wait or (
             analysis.score > 0
             if bullish_bias
             else analysis.score < 0

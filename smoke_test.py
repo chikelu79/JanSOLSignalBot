@@ -157,7 +157,7 @@ def main() -> None:
     assert "crowded at ±0.0500%" in message
     assert "high ≥ 0.10%" in message
     assert "LONG ≥ +62; SHORT ≤ -62" in message
-    assert "active ≥ 67%; strong ≥ 100%" in message
+    assert "Volume activity:" in message and "strong ≥ 100%" in message
     assert "baseline; direction comes from its % change" in message
     assert "Book imbalance: +24.0% — BID HEAVY" in message
     assert "Buy wall: $98.5000 — 4.2× median level" in message

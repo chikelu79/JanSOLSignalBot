@@ -290,14 +290,8 @@ def build_confidence_breakdown(
     context: Any | None = None,
 ) -> list[str]:
     """Explain signal quality without changing the trading decision."""
-    timeframe_weights = {
-        "5m": 0.08,
-        "15m": 0.14,
-        "1h": 0.20,
-        "4h": 0.23,
-        "8h": 0.17,
-        "1d": 0.18,
-    }
+    profile = get_profile(get_trading_horizon(), get_risk_style())
+    timeframe_weights = profile.weights
     trend_values: list[tuple[float, float]] = []
     momentum_values: list[tuple[float, float]] = []
     liquidity_values: list[tuple[float, float]] = []
@@ -343,6 +337,7 @@ def build_confidence_breakdown(
     momentum = _weighted_average(momentum_values)
     liquidity = _weighted_average(liquidity_values)
     volume = _weighted_average(volume_values)
+    active_volume_percent = profile.volume_confirmation / 1.5 * 100.0
     macro = float(getattr(context, "macro_score", 0.0))
     macro = max(-100.0, min(100.0, macro / 30.0 * 100.0))
 
@@ -389,7 +384,7 @@ def build_confidence_breakdown(
         f"Macro: {abs(macro):.0f}% {_bias_label(macro)} (directional at ±18%)",
         f"Liquidity position: {abs(liquidity):.0f}% {_bias_label(liquidity)} (directional at ±18%)",
         "",
-        f"Volume activity: {volume:.0f}% (active ≥ 67%; strong ≥ 100%)",
+        f"Volume activity: {volume:.0f}% (active ≥ {active_volume_percent:.0f}% for {profile.horizon.lower()} {profile.risk_style.lower()}; strong ≥ 100%)",
         f"Timeframe alignment: {alignment:.0f}% (strong ≥ 70%; mixed < 50%)",
         risk_line,
     ]
