@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
+from bot_state import get_active_setups, remove_active_setup, set_active_setup
 from session_context import get_session_context
 from strategy import MarketSignal, TradePlan, get_readiness_label, get_signal_grade
 
@@ -19,7 +20,33 @@ RAPID_SCORE_CHANGE = 22.0
 last_alert_times: dict[str, float] = {}
 last_signal_hashes: dict[str, str] = {}
 previous_scores: dict[str, float] = {}
-setup_states: dict[str, dict[str, Any]] = {}
+
+
+def _load_setup_states() -> dict[str, dict[str, Any]]:
+    restored: dict[str, dict[str, Any]] = {}
+    for symbol, state in get_active_setups().items():
+        try:
+            restored[symbol] = {
+                **state,
+                "plan": TradePlan(**state["plan"]),
+            }
+        except (KeyError, TypeError, ValueError):
+            remove_active_setup(symbol)
+    return restored
+
+
+setup_states: dict[str, dict[str, Any]] = _load_setup_states()
+
+
+def _persist_setup(symbol: str, state: dict[str, Any]) -> None:
+    serializable = dict(state)
+    serializable["plan"] = asdict(state["plan"])
+    set_active_setup(symbol, serializable)
+
+
+def _clear_setup(symbol: str) -> None:
+    setup_states.pop(symbol, None)
+    remove_active_setup(symbol)
 
 
 @dataclass
@@ -459,39 +486,45 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
         side = state["side"]
         price = signal.price
         if (side == "LONG" and price <= plan.stop_loss) or (side == "SHORT" and price >= plan.stop_loss):
-            setup_states.pop(symbol, None)
+            _clear_setup(symbol)
             return _decision(signal, context, "INVALIDATED", "Stop or invalidation reached", "Exit the setup; the planned invalidation level was reached.", MANAGEMENT_COOLDOWN_SECONDS)
         if side == "LONG":
             if price >= plan.tp3:
-                setup_states.pop(symbol, None)
+                _clear_setup(symbol)
                 return _decision(signal, context, "TP3", "Final target reached", "Consider closing the remaining position.", MANAGEMENT_COOLDOWN_SECONDS)
             if price >= plan.tp2 and not state.get("tp2"):
                 state["tp2"] = True
+                _persist_setup(symbol, state)
                 return _decision(signal, context, "TP2", "Second target reached", "Consider scaling out further and trailing the stop.", MANAGEMENT_COOLDOWN_SECONDS)
             if price >= plan.tp1 and not state.get("tp1"):
                 state["tp1"] = True
+                _persist_setup(symbol, state)
                 return _decision(signal, context, "TP1", "First target reached", "Consider partial profit and move protection toward breakeven.", MANAGEMENT_COOLDOWN_SECONDS)
             if price >= plan.entry_high + plan.risk_per_unit * 0.75 and not state.get("breakeven"):
                 state["breakeven"] = True
+                _persist_setup(symbol, state)
                 return _decision(signal, context, "BREAKEVEN", "Trade moved in favor", "Consider moving the stop to breakeven after accounting for fees.", MANAGEMENT_COOLDOWN_SECONDS)
             if adjusted < -20:
-                setup_states.pop(symbol, None)
+                _clear_setup(symbol)
                 return _decision(signal, context, "EXIT", "Direction reversed", "The model turned materially bearish; reassess or exit the remaining position.", MANAGEMENT_COOLDOWN_SECONDS)
         else:
             if price <= plan.tp3:
-                setup_states.pop(symbol, None)
+                _clear_setup(symbol)
                 return _decision(signal, context, "TP3", "Final target reached", "Consider closing the remaining position.", MANAGEMENT_COOLDOWN_SECONDS)
             if price <= plan.tp2 and not state.get("tp2"):
                 state["tp2"] = True
+                _persist_setup(symbol, state)
                 return _decision(signal, context, "TP2", "Second target reached", "Consider scaling out further and trailing the stop.", MANAGEMENT_COOLDOWN_SECONDS)
             if price <= plan.tp1 and not state.get("tp1"):
                 state["tp1"] = True
+                _persist_setup(symbol, state)
                 return _decision(signal, context, "TP1", "First target reached", "Consider partial profit and move protection toward breakeven.", MANAGEMENT_COOLDOWN_SECONDS)
             if price <= plan.entry_low - plan.risk_per_unit * 0.75 and not state.get("breakeven"):
                 state["breakeven"] = True
+                _persist_setup(symbol, state)
                 return _decision(signal, context, "BREAKEVEN", "Trade moved in favor", "Consider moving the stop to breakeven after accounting for fees.", MANAGEMENT_COOLDOWN_SECONDS)
             if adjusted > 20:
-                setup_states.pop(symbol, None)
+                _clear_setup(symbol)
                 return _decision(signal, context, "EXIT", "Direction reversed", "The model turned materially bullish; reassess or exit the remaining position.", MANAGEMENT_COOLDOWN_SECONDS)
 
     if prior_score is not None and abs(adjusted - prior_score) >= RAPID_SCORE_CHANGE:
@@ -517,5 +550,6 @@ def evaluate_signal_alert(signal: MarketSignal, context: Any | None = None) -> A
             "tp2": False,
             "breakeven": False,
         }
+        _persist_setup(symbol, setup_states[symbol])
         return _decision(signal, context, "ENTRY", "Setup confirmed at planned level", "Entry is confirmed near the planned zone. Avoid entering outside the displayed range.", ENTRY_COOLDOWN_SECONDS)
     return AlertDecision(False, "NONE", symbol, "", "No new alert condition")

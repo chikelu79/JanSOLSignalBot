@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import logging
 import re
@@ -24,6 +26,7 @@ DEFAULT_STATE: dict[str, Any] = {
         "BTCUSDT",
         "ETHUSDT",
     ],
+    "active_setups": {},
 }
 
 
@@ -145,6 +148,39 @@ def validate_state(
         )
 
     validated["watchlist"] = normalized_watchlist
+
+    active_setups = state.get("active_setups", {})
+    validated_setups: dict[str, Any] = {}
+    if isinstance(active_setups, dict):
+        for symbol, setup in active_setups.items():
+            if not isinstance(setup, dict):
+                continue
+            try:
+                normalized = normalize_symbol(str(symbol))
+                side = str(setup.get("side", "")).upper()
+                plan = setup.get("plan", {})
+                if side not in {"LONG", "SHORT"} or not isinstance(plan, dict):
+                    continue
+                required_levels = (
+                    "entry_low", "entry_high", "stop_loss", "invalidation",
+                    "tp1", "tp2", "tp3", "risk_per_unit",
+                    "reward_risk_tp1", "reward_risk_tp2", "reward_risk_tp3",
+                )
+                clean_plan = {"side": side}
+                for field in required_levels:
+                    clean_plan[field] = float(plan[field])
+                validated_setups[normalized] = {
+                    "side": side,
+                    "plan": clean_plan,
+                    "created_at": float(setup.get("created_at", 0.0)),
+                    "tp1": bool(setup.get("tp1", False)),
+                    "tp2": bool(setup.get("tp2", False)),
+                    "breakeven": bool(setup.get("breakeven", False)),
+                }
+            except (KeyError, TypeError, ValueError):
+                continue
+
+    validated["active_setups"] = validated_setups
 
     return validated
 
@@ -397,4 +433,29 @@ def get_state_snapshot() -> dict[str, Any]:
         "monitor_enabled": is_monitor_enabled(),
         "runtime_chat_id": get_runtime_chat_id(),
         "watchlist": get_watchlist(),
+        "active_setups": get_active_setups(),
     }
+
+
+# =========================================================
+# ACTIVE TRADE SETUPS
+# =========================================================
+
+def get_active_setups() -> dict[str, Any]:
+    return json.loads(json.dumps(STATE.get("active_setups", {})))
+
+
+def set_active_setup(symbol: str, setup: dict[str, Any]) -> None:
+    normalized = normalize_symbol(symbol)
+    active_setups = dict(STATE.get("active_setups", {}))
+    active_setups[normalized] = setup
+    STATE["active_setups"] = active_setups
+    save_state(STATE)
+
+
+def remove_active_setup(symbol: str) -> None:
+    normalized = normalize_symbol(symbol)
+    active_setups = dict(STATE.get("active_setups", {}))
+    active_setups.pop(normalized, None)
+    STATE["active_setups"] = active_setups
+    save_state(STATE)
