@@ -10,7 +10,7 @@ from bot_state import (
     get_active_setups, get_alert_history, get_armed_trade_plans, get_early_opportunities, get_early_opportunity_outcomes, get_risk_style, get_signal_performance, get_trading_horizon, is_auto_plan_enabled,
     record_alert_time, record_early_opportunity_outcome, record_signal_performance, remove_active_setup, remove_early_opportunity, set_active_setup, set_armed_trade_plans, set_early_opportunity, update_signal_performance,
 )
-from economic_calendar import format_event_time, get_economic_risk
+from economic_calendar import format_event_time, get_profile_economic_risk as get_economic_risk
 from lunar_context import get_lunar_context
 from session_context import get_session_context, get_special_market_event
 from strategy import MarketSignal, TradePlan, get_readiness_label, get_signal_grade

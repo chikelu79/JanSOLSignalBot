@@ -102,12 +102,40 @@ def get_economic_risk(now: datetime | None = None) -> EconomicRisk:
     )
 
 
+def get_profile_economic_risk(
+    now: datetime | None = None,
+    horizon: str | None = None,
+    risk_style: str | None = None,
+) -> EconomicRisk:
+    """Expand the pre-release entry blackout to match the holding horizon."""
+    risk = get_economic_risk(now)
+    if risk.block_new_entries or risk.event is None or risk.status == "CLEAR":
+        return risk
+    if horizon is None or risk_style is None:
+        from bot_state import get_risk_style, get_trading_horizon
+        horizon = horizon or get_trading_horizon()
+        risk_style = risk_style or get_risk_style()
+    base_hours = {"SCALPING": 0.75, "DAY": 2.0, "SWING": 6.0}.get(str(horizon).upper(), 2.0)
+    style_multiplier = {"AGGRESSIVE": 0.75, "BALANCED": 1.0, "CONSERVATIVE": 1.5}.get(str(risk_style).upper(), 1.0)
+    blackout_hours = base_hours * style_multiplier
+    current = now.astimezone(EASTERN) if now else datetime.now(EASTERN)
+    hours_until = (risk.event.scheduled_at - current).total_seconds() / 3600.0
+    if 0.0 < hours_until <= blackout_hours:
+        return EconomicRisk(
+            risk.event,
+            "PROFILE BLACKOUT",
+            f"{risk.event.name} is due in {hours_until:.1f} hours. The {str(horizon).upper()} / {str(risk_style).upper()} profile blocks fresh entries inside {blackout_hours:.1f} hours of release.",
+            True,
+        )
+    return risk
+
+
 def format_event_time(event: EconomicEvent) -> str:
     return event.scheduled_at.strftime("%a %b %-d, %-I:%M %p ET")
 
 
 def build_calendar_message(now: datetime | None = None) -> str:
-    risk = get_economic_risk(now)
+    risk = get_profile_economic_risk(now)
     lunar = get_lunar_context(now)
     lines = [
         "📅 ECONOMIC CALENDAR",

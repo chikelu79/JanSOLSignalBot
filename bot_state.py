@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from threading import Lock
@@ -15,12 +16,13 @@ logger = logging.getLogger(__name__)
 # STATE SETTINGS
 # =========================================================
 
-STATE_FILE = Path("bot_state.json")
+STATE_FILE = Path(os.getenv("BOT_STATE_FILE", "bot_state.json"))
+DEFAULT_AUTO_PLAN_ENABLED = os.getenv("AUTO_PLAN_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 DEFAULT_STATE: dict[str, Any] = {
     "selected_pair": "SOLUSDT",
     "monitor_enabled": True,
-    "auto_plan_enabled": False,
+    "auto_plan_enabled": DEFAULT_AUTO_PLAN_ENABLED,
     "auto_plan_fingerprints": {},
     "runtime_chat_id": "",
     "watchlist": [
@@ -121,7 +123,7 @@ def validate_state(
             True,
         )
     )
-    validated["auto_plan_enabled"] = bool(state.get("auto_plan_enabled", False))
+    validated["auto_plan_enabled"] = bool(state.get("auto_plan_enabled", DEFAULT_AUTO_PLAN_ENABLED))
     fingerprints = state.get("auto_plan_fingerprints", {})
     validated["auto_plan_fingerprints"] = {
         normalize_symbol(str(symbol)): str(value)
@@ -369,6 +371,7 @@ def save_state(
     )
 
     with state_lock:
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         temporary_file = STATE_FILE.with_suffix(
             ".tmp"
         )

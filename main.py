@@ -559,6 +559,7 @@ async def status_command(
         f"{state['selected_pair']}\n"
         f"Monitor: "
         f"{'ON' if state['monitor_enabled'] else 'OFF'}\n"
+        f"Automatic planning: {'ON' if state.get('auto_plan_enabled') else 'OFF'}\n"
         f"Interval: "
         f"{MONITOR_INTERVAL_SECONDS} seconds\n"
         f"Market source: Binance\n"

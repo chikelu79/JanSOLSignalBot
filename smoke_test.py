@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from bot_state import get_active_setups, get_early_opportunities, remove_active_setup, remove_armed_trade_plans, remove_early_opportunity, set_active_setup, set_armed_trade_plans
-from economic_calendar import build_calendar_message, get_economic_risk
+from economic_calendar import build_calendar_message, get_economic_risk, get_profile_economic_risk
 from news_intelligence import build_news_message
 from lunar_context import get_lunar_context
 from market_context import build_market_context, calculate_coinbase_premium
@@ -69,6 +69,10 @@ def main() -> None:
     upcoming = get_economic_risk(datetime(2026, 7, 13, 20, 0, tzinfo=eastern))
     blocked = get_economic_risk(datetime(2026, 7, 14, 8, 0, tzinfo=eastern))
     post_release = get_economic_risk(datetime(2026, 7, 14, 9, 15, tzinfo=eastern))
+    day_blackout = get_profile_economic_risk(datetime(2026, 7, 14, 6, 36, tzinfo=eastern), "DAY", "BALANCED")
+    scalp_caution = get_profile_economic_risk(datetime(2026, 7, 14, 6, 36, tzinfo=eastern), "SCALPING", "AGGRESSIVE")
+    assert day_blackout.block_new_entries is True
+    assert scalp_caution.block_new_entries is False
     assert upcoming.status == "UPCOMING" and not upcoming.block_new_entries
     assert blocked.status == "HIGH RISK" and blocked.block_new_entries
     assert post_release.status == "POST-RELEASE" and post_release.block_new_entries
@@ -468,7 +472,7 @@ def main() -> None:
     assert "CONFIDENCE BREAKDOWN" in message
     assert "Risk:" in message
     assert decision.should_send
-    assert decision.alert_type == "WATCH"
+    assert decision.alert_type in {"WATCH", "EVENT_RISK"}
     persisted_setup = {
         "side": plan.side,
         "plan": asdict(plan),
