@@ -386,9 +386,7 @@ def main() -> None:
         },
     )
     assert order_flow_alert.alert_type == "ORDER_FLOW_SHIFT"
-    large_trade_alert = evaluate_derivatives_alert(
-        signal,
-        {
+    large_trade_data = {
             "funding_rate": 0.0,
             "funding_label": "BALANCED",
             "open_interest_value": 250000000.0,
@@ -401,10 +399,23 @@ def main() -> None:
             "largest_trade_side": "BUY",
             "provider": "Offline test",
             "live": True,
-        },
+        }
+    remove_armed_trade_plans(signal.symbol)
+    large_trade_without_zone = evaluate_derivatives_alert(signal, large_trade_data)
+    assert large_trade_without_zone.alert_type != "LARGE_TRADE_FLOW"
+    set_armed_trade_plans(signal.symbol, {"LONG": {
+        "side": "LONG", "interval": "15m",
+        "zone_low": signal.price * 0.999, "zone_high": signal.price * 1.001,
+        "created_at": 1.0, "expires_at": 9999999999.0,
+    }})
+    large_trade_alert = evaluate_derivatives_alert(
+        signal,
+        large_trade_data,
     )
     assert large_trade_alert.alert_type == "LARGE_TRADE_FLOW"
     assert "Largest trade: $200,000.00 BUY — 40.0× average\nLarge-trade net flow:" in large_trade_alert.message
+    assert "armed LONG zone" in large_trade_alert.message
+    remove_armed_trade_plans(signal.symbol)
     assert "Execution status: WATCH" in message
     assert "CONFIDENCE BREAKDOWN" in message
     assert "Risk:" in message

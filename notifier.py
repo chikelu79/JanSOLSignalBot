@@ -22,6 +22,7 @@ MANAGEMENT_COOLDOWN_SECONDS = 10 * 60
 DO_NOT_CHASE_COOLDOWN_SECONDS = 20 * 60
 RAPID_CHANGE_COOLDOWN_SECONDS = 15 * 60
 DERIVATIVES_ALERT_COOLDOWN_SECONDS = 30 * 60
+LARGE_TRADE_ALERT_COOLDOWN_SECONDS = 2 * 60 * 60
 DERIVATIVES_EXIT_COOLDOWN_SECONDS = 15 * 60
 ECONOMIC_ALERT_COOLDOWN_SECONDS = 6 * 60 * 60
 SESSION_ALERT_COOLDOWN_SECONDS = 4 * 60 * 60
@@ -1474,6 +1475,44 @@ def evaluate_news_alert(data: dict[str, Any]) -> AlertDecision:
     return AlertDecision(False, "NONE", "MARKET", "", "No new relevant market headline")
 
 
+def _large_trade_zone_context(symbol: str, price: float) -> tuple[bool, str, float]:
+    """Return whether exceptional flow is close enough to matter to a planned trade."""
+    symbol = symbol.upper()
+    if setup_states.get(symbol):
+        return True, "active managed setup", 0.0
+
+    candidates: list[tuple[float, str]] = []
+    for side, plan in get_armed_trade_plans().get(symbol, {}).items():
+        try:
+            zone_low = float(plan["zone_low"])
+            zone_high = float(plan["zone_high"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        distance = 0.0 if zone_low <= price <= zone_high else min(
+            abs(price - zone_low), abs(price - zone_high)
+        ) / max(price, 1e-9) * 100.0
+        candidates.append((distance, f"armed {side.upper()} zone"))
+
+    for opportunity in get_early_opportunities().values():
+        if str(opportunity.get("symbol", "")).upper() != symbol:
+            continue
+        try:
+            zone_low = float(opportunity["zone_low"])
+            zone_high = float(opportunity["zone_high"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        distance = 0.0 if zone_low <= price <= zone_high else min(
+            abs(price - zone_low), abs(price - zone_high)
+        ) / max(price, 1e-9) * 100.0
+        label = f"{opportunity.get('interval', '?')} {opportunity.get('side', '').upper()} radar zone"
+        candidates.append((distance, label))
+
+    if not candidates:
+        return False, "no active decision zone", float("inf")
+    distance, label = min(candidates)
+    return distance <= 0.50, label, distance
+
+
 def evaluate_derivatives_alert(
     signal: MarketSignal,
     derivatives: dict[str, Any] | None,
@@ -1576,13 +1615,18 @@ def evaluate_derivatives_alert(
         and abs(large_flow_imbalance) >= 60.0
         and largest_trade_multiple >= 10.0
     )
-    if concentrated_large_flow:
+    zone_relevant, zone_label, zone_distance = _large_trade_zone_context(symbol, signal.price)
+    if concentrated_large_flow and zone_relevant:
         side = "BUY" if large_flow_imbalance > 0 else "SELL"
         key = make_alert_key(symbol, "LARGE_TRADE_FLOW", side)
-        if alert_allowed(key, DERIVATIVES_ALERT_COOLDOWN_SECONDS):
+        if alert_allowed(key, LARGE_TRADE_ALERT_COOLDOWN_SECONDS):
             mark_alert_sent(key)
+            proximity = "during an active managed setup" if zone_label == "active managed setup" else (
+                f"while price is {zone_distance:.2f}% from the {zone_label}"
+            )
             action = (
-                f"Unusually concentrated large {side.lower()} trades appeared. Use this as flow confirmation, not a standalone entry; large traders can hedge or reverse."
+                f"Unusually concentrated large {side.lower()} trades appeared {proximity}. "
+                "Use this as confirmation for that plan, not a standalone entry; large traders can hedge or reverse."
             )
             return AlertDecision(
                 True,
