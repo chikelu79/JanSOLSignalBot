@@ -403,6 +403,7 @@ def evaluate_early_opportunity_alert(
             "invalidation": invalidation,
             "created_at": now, "expires_at": now + expiry_seconds,
             "relationship": relationship, "triggers": triggers,
+            "profile": f"{profile.horizon} / {profile.risk_style}",
             "zone_reached": False,
             "target_1r": midpoint + direction * risk if risk > 0 else 0.0,
             "target_2r": midpoint + direction * risk * 2.0 if risk > 0 else 0.0,
@@ -574,6 +575,24 @@ def build_radar_stats_message() -> str:
         and not any(item.get("status") == "CONFIRMED" for item in lifecycle)
         for lifecycle in lifecycles.values()
     )
+    calibration_sample = unconfirmed_1r + correctly_avoided
+    missed_rate = unconfirmed_1r / calibration_sample * 100.0 if calibration_sample else 0.0
+    relationship_misses: dict[str, int] = {}
+    for lifecycle in lifecycles.values():
+        if (
+            any(item.get("status") == "TARGET_1R" for item in lifecycle)
+            and not any(item.get("status") == "CONFIRMED" for item in lifecycle)
+        ):
+            label = str(lifecycle[0].get("relationship", "MIXED-TREND"))
+            relationship_misses[label] = relationship_misses.get(label, 0) + 1
+    if calibration_sample < 10:
+        calibration_note = f"Collect more outcomes before tuning ({calibration_sample}/10 minimum sample)."
+    elif missed_rate >= 60.0:
+        calibration_note = "Filters may be too restrictive. Review the dominant missed setup type before lowering any threshold."
+    elif missed_rate <= 25.0:
+        calibration_note = "Filters are avoiding more invalidations than opportunities; keep current confirmation standards."
+    else:
+        calibration_note = "Miss/avoid balance is mixed; keep collecting evidence before changing thresholds."
     lines = [
         "📈 OPPORTUNITY RADAR TRACKING",
         "",
@@ -590,6 +609,11 @@ def build_radar_stats_message() -> str:
         f"Unconfirmed watches that later reached hypothetical 2R: {unconfirmed_2r}",
         f"Unconfirmed watches correctly avoided before invalidation: {correctly_avoided}",
         "Use these counts to tune thresholds; they do not assume an executable fill.",
+        "",
+        "CALIBRATION",
+        f"Unconfirmed 1R rate: {missed_rate:.1f}% ({unconfirmed_1r}/{calibration_sample} auditable outcomes)",
+        f"Guidance: {calibration_note}",
+        *(["Misses by setup relationship:"] + [f"• {label}: {count}" for label, count in sorted(relationship_misses.items())] if relationship_misses else []),
         "",
         f"Recorded lifecycle events: {len(outcomes)} (latest 200 retained)",
     ]

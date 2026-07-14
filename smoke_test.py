@@ -375,6 +375,7 @@ def main() -> None:
     radar_audit = build_radar_stats_message()
     assert "MISSED-OPPORTUNITY AUDIT" in radar_audit
     assert "Unconfirmed watches that later reached hypothetical 1R:" in radar_audit
+    assert "CALIBRATION" in radar_audit and "Unconfirmed 1R rate:" in radar_audit
     setup_states.pop(signal.symbol, None)
     remove_active_setup(signal.symbol)
     remove_armed_trade_plans(signal.symbol)
