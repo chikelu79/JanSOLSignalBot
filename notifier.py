@@ -833,7 +833,8 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
             stop = level - atr * 0.75
             direction = 1.0
             flow_support = taker_flow >= 15.0 or large_flow >= 30.0
-            opposing_clue = any("bearish" in clue for clue in directional_clues)
+            opposing_clues = [clue for clue in directional_clues if "bearish" in clue]
+            opposing_clue = bool(opposing_clues)
             momentum_support = analysis.score >= 20.0 and not opposing_clue
             trigger = "bullish reversal close + RSI/Stoch turn upward"
         else:
@@ -841,7 +842,8 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
             stop = level + atr * 0.75
             direction = -1.0
             flow_support = taker_flow <= -15.0 or large_flow <= -30.0
-            opposing_clue = any("bullish" in clue for clue in directional_clues)
+            opposing_clues = [clue for clue in directional_clues if "bullish" in clue]
+            opposing_clue = bool(opposing_clues)
             momentum_support = analysis.score <= -20.0 and not opposing_clue
             trigger = "bearish rejection close + RSI/Stoch turn downward"
         midpoint = (zone_low + zone_high) / 2.0
@@ -877,6 +879,7 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
             "momentum_support": momentum_support, "candle_ok": candle_ok, "trigger": trigger,
             "directional_support": sum((momentum_support, candle_ok, flow_support)),
             "opposing_clue": opposing_clue,
+            "opposing_reason": opposing_clues[0].capitalize() if opposing_clues else "",
             "compressed": float(getattr(analysis, "bollinger_width", 99.0)) < 3.0,
         }
 
@@ -952,10 +955,18 @@ def build_trade_dashboard(signal: MarketSignal, context: Any | None = None) -> s
         if focus["compressed"]:
             focus_lines.append("Breakout risk: 🔵 COMPRESSION — require a close/retest; the level can break instead of reverse.")
     else:
+        long_block = (
+            long_focus["opposing_reason"]
+            or ("Order flow opposes long" if not long_focus["flow_support"] else "Waiting for momentum or reversal confirmation")
+        )
+        short_block = (
+            short_focus["opposing_reason"]
+            or ("Order flow opposes short" if not short_focus["flow_support"] else "Waiting for momentum or reversal confirmation")
+        )
         focus_lines = [
             "🎯 FOCUS: NO CLEAR DIRECTION — WAIT",
-            f"🟢 Long evidence: {long_focus['directional_support']}/3 directional clues; zone {long_focus['distance']:.2f}% away",
-            f"🔴 Short evidence: {short_focus['directional_support']}/3 directional clues; zone {short_focus['distance']:.2f}% away",
+            f"🟢 Long evidence: {long_focus['directional_support']}/3; zone {long_focus['distance']:.2f}% away — BLOCKED: {long_block}",
+            f"🔴 Short evidence: {short_focus['directional_support']}/3; zone {short_focus['distance']:.2f}% away — BLOCKED: {short_block}",
             "Decision: Proximity alone cannot select a trade. Momentum, reversal candle and order flow must establish one preferred side.",
             f"Economic event: {economic_check}",
             "Plan control: Keep LONG and SHORT armed until one direction becomes dominant.",

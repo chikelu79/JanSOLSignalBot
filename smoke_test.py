@@ -267,6 +267,7 @@ def main() -> None:
         SimpleNamespace(adjusted_score=25.0, taker_flow_imbalance=-79.7, large_flow_imbalance=-100.0),
     )
     assert "FOCUS: NO CLEAR DIRECTION — WAIT" in conflicting_dashboard
+    assert "BLOCKED: Bearish regular divergence" in conflicting_dashboard
     signal.analyses["15m"].divergences = []
     generated_plans = create_structural_trade_plans(signal)
     assert set(generated_plans) == {"LONG", "SHORT"}
