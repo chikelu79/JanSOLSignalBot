@@ -113,6 +113,13 @@ class MarketContext:
     ask_wall_strength: float
     taker_buy_ratio: float
     taker_flow_imbalance: float
+    large_trade_threshold: float
+    large_trade_count: int
+    large_flow_share: float
+    large_flow_imbalance: float
+    largest_trade_value: float
+    largest_trade_side: str
+    largest_trade_multiple: float
 
     reasons: list[str]
     warnings: list[str]
@@ -813,8 +820,10 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
 
     taker_buy_value = 0.0
     taker_sell_value = 0.0
+    trade_records: list[tuple[float, str]] = []
     for trade in trades_data:
         notional = float(trade.get("px", 0.0)) * float(trade.get("sz", 0.0)) * contract_value
+        trade_records.append((notional, str(trade.get("side", "unknown"))))
         if trade.get("side") == "buy":
             taker_buy_value += notional
         elif trade.get("side") == "sell":
@@ -822,6 +831,18 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
     taker_total = taker_buy_value + taker_sell_value
     taker_buy_ratio = taker_buy_value / taker_total * 100.0 if taker_total else 50.0
     taker_flow_imbalance = (taker_buy_value - taker_sell_value) / taker_total * 100.0 if taker_total else 0.0
+    ordered_trade_values = sorted(value for value, _ in trade_records)
+    average_trade = taker_total / len(trade_records) if trade_records else 0.0
+    percentile_99 = ordered_trade_values[int((len(ordered_trade_values) - 1) * 0.99)] if ordered_trade_values else 0.0
+    large_trade_threshold = max(percentile_99, average_trade * 5.0)
+    large_trades = [item for item in trade_records if item[0] >= large_trade_threshold]
+    large_buy_value = sum(value for value, side in large_trades if side == "buy")
+    large_sell_value = sum(value for value, side in large_trades if side == "sell")
+    large_total = large_buy_value + large_sell_value
+    large_flow_share = large_total / taker_total * 100.0 if taker_total else 0.0
+    large_flow_imbalance = (large_buy_value - large_sell_value) / large_total * 100.0 if large_total else 0.0
+    largest_trade_value, largest_trade_side = max(trade_records, default=(0.0, "unknown"), key=lambda item: item[0])
+    largest_trade_multiple = largest_trade_value / average_trade if average_trade else 0.0
 
     return {
         "funding_rate": funding_rate,
@@ -844,6 +865,13 @@ async def _fetch_okx_derivatives_context(symbol: str) -> dict[str, Any]:
         "ask_wall_strength": ask_wall_strength,
         "taker_buy_ratio": taker_buy_ratio,
         "taker_flow_imbalance": taker_flow_imbalance,
+        "large_trade_threshold": large_trade_threshold,
+        "large_trade_count": len(large_trades),
+        "large_flow_share": large_flow_share,
+        "large_flow_imbalance": large_flow_imbalance,
+        "largest_trade_value": largest_trade_value,
+        "largest_trade_side": largest_trade_side.upper(),
+        "largest_trade_multiple": largest_trade_multiple,
     }
 
 
@@ -1676,6 +1704,13 @@ def build_market_context(
     ask_wall_strength = 0.0
     taker_buy_ratio = 50.0
     taker_flow_imbalance = 0.0
+    large_trade_threshold = 0.0
+    large_trade_count = 0
+    large_flow_share = 0.0
+    large_flow_imbalance = 0.0
+    largest_trade_value = 0.0
+    largest_trade_side = "UNKNOWN"
+    largest_trade_multiple = 0.0
 
     total_adjustment = 0.0
 
@@ -1891,6 +1926,13 @@ def build_market_context(
         ask_wall_strength = float(derivatives.get("ask_wall_strength", 0.0))
         taker_buy_ratio = float(derivatives.get("taker_buy_ratio", 50.0))
         taker_flow_imbalance = float(derivatives.get("taker_flow_imbalance", 0.0))
+        large_trade_threshold = float(derivatives.get("large_trade_threshold", 0.0))
+        large_trade_count = int(derivatives.get("large_trade_count", 0))
+        large_flow_share = float(derivatives.get("large_flow_share", 0.0))
+        large_flow_imbalance = float(derivatives.get("large_flow_imbalance", 0.0))
+        largest_trade_value = float(derivatives.get("largest_trade_value", 0.0))
+        largest_trade_side = str(derivatives.get("largest_trade_side", "UNKNOWN"))
+        largest_trade_multiple = float(derivatives.get("largest_trade_multiple", 0.0))
 
         if funding_rate >= 0.0005:
             derivatives_adjustment -= 3.0
@@ -2012,6 +2054,13 @@ def build_market_context(
         ask_wall_strength=ask_wall_strength,
         taker_buy_ratio=taker_buy_ratio,
         taker_flow_imbalance=taker_flow_imbalance,
+        large_trade_threshold=large_trade_threshold,
+        large_trade_count=large_trade_count,
+        large_flow_share=large_flow_share,
+        large_flow_imbalance=large_flow_imbalance,
+        largest_trade_value=largest_trade_value,
+        largest_trade_side=largest_trade_side,
+        largest_trade_multiple=largest_trade_multiple,
         reasons=unique_reasons[:10],
         warnings=unique_warnings[:10],
     )

@@ -115,6 +115,13 @@ def main() -> None:
                 "ask_wall_strength": 2.1,
                 "taker_buy_ratio": 61.0,
                 "taker_flow_imbalance": 22.0,
+                "large_trade_threshold": 25000.0,
+                "large_trade_count": 4,
+                "large_flow_share": 28.0,
+                "large_flow_imbalance": 72.0,
+                "largest_trade_value": 150000.0,
+                "largest_trade_side": "BUY",
+                "largest_trade_multiple": 31.0,
             },
             "provider_errors": {},
         },
@@ -133,6 +140,8 @@ def main() -> None:
     assert "Book imbalance: +24.0% — BID HEAVY" in message
     assert "Buy wall: $98.5000 — 4.2× median level" in message
     assert "Recent taker flow: 61.0% buys — BUY DOMINANT" in message
+    assert "LARGE TRADE FLOW" in message
+    assert "Largest trade: $150,000.00 BUY — 31.0× average" in message
     assert "\n\nTechnical score:" in message
     # OKX sizes are contracts, not whole coins; live parsing must apply ctVal.
     btc_contracts = 100.0
@@ -188,6 +197,24 @@ def main() -> None:
         },
     )
     assert order_flow_alert.alert_type == "ORDER_FLOW_SHIFT"
+    large_trade_alert = evaluate_derivatives_alert(
+        signal,
+        {
+            "funding_rate": 0.0,
+            "funding_label": "BALANCED",
+            "open_interest_value": 250000000.0,
+            "open_interest_change_5m": 0.0,
+            "open_interest_change_1h": 0.0,
+            "large_flow_share": 32.0,
+            "large_flow_imbalance": 75.0,
+            "largest_trade_multiple": 40.0,
+            "largest_trade_value": 200000.0,
+            "largest_trade_side": "BUY",
+            "provider": "Offline test",
+            "live": True,
+        },
+    )
+    assert large_trade_alert.alert_type == "LARGE_TRADE_FLOW"
     assert "Execution status: WATCH" in message
     assert "CONFIDENCE BREAKDOWN" in message
     assert "Risk:" in message

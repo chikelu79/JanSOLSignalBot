@@ -209,6 +209,9 @@ def format_market_context(context: Any | None) -> list[str]:
     taker_imbalance = float(getattr(context, "taker_flow_imbalance", 0.0))
     taker_label = "BUY DOMINANT" if taker_imbalance >= 15.0 else "SELL DOMINANT" if taker_imbalance <= -15.0 else "BALANCED"
     taker_icon = "🟢" if taker_imbalance >= 15.0 else "🔴" if taker_imbalance <= -15.0 else "🟡"
+    large_flow = float(getattr(context, "large_flow_imbalance", 0.0))
+    large_flow_label = "BUY DOMINANT" if large_flow >= 30.0 else "SELL DOMINANT" if large_flow <= -30.0 else "BALANCED"
+    large_flow_icon = "🟢" if large_flow >= 30.0 else "🔴" if large_flow <= -30.0 else "🟡"
     return [
         f"{direction_emoji(getattr(context, 'btc_direction', 'UNKNOWN'))} BTC: {getattr(context, 'btc_direction', 'UNKNOWN')} "
         f"({getattr(context, 'btc_score', 0):+.1f}; directional at ±62)",
@@ -240,6 +243,16 @@ def format_market_context(context: Any | None) -> list[str]:
         f"{getattr(context, 'ask_wall_strength', 0.0):.1f}× median level (significant ≥ 3×)",
         f"{taker_icon} Recent taker flow: {taker_ratio:.1f}% buys — {taker_label} "
         f"(directional beyond 57.5% / below 42.5%)",
+        "",
+        "LARGE TRADE FLOW",
+        f"🔵 Dynamic large-trade threshold: {price_text(getattr(context, 'large_trade_threshold', 0.0))} "
+        f"(top 1% or ≥ 5× average trade)",
+        f"🔵 Large trades: {getattr(context, 'large_trade_count', 0)} — "
+        f"{getattr(context, 'large_flow_share', 0.0):.1f}% of sampled flow (concentrated ≥ 20%)",
+        f"{'🟢' if getattr(context, 'largest_trade_side', 'UNKNOWN') == 'BUY' else '🔴'} Largest trade: "
+        f"{price_text(getattr(context, 'largest_trade_value', 0.0))} {getattr(context, 'largest_trade_side', 'UNKNOWN')} — "
+        f"{getattr(context, 'largest_trade_multiple', 0.0):.1f}× average (exceptional ≥ 10×)",
+        f"{large_flow_icon} Large-trade net flow: {large_flow:+.1f}% — {large_flow_label} (directional at ±30%)",
         f"🔵 Derivatives source: {getattr(context, 'derivatives_provider', 'UNKNOWN')}",
         "",
         f"{direction_emoji('LONG' if getattr(context, 'macro_bias', 'NEUTRAL') == 'BULLISH' else 'SHORT' if getattr(context, 'macro_bias', 'NEUTRAL') == 'BEARISH' else 'WAIT')} Macro bias: {getattr(context, 'macro_bias', 'NEUTRAL')} "
@@ -571,6 +584,7 @@ def build_derivatives_alert_message(
         "DERIVATIVES_EXIT": f"🚪 {signal.symbol} DERIVATIVES EXIT WARNING",
         "LIQUIDATION_WAVE": f"🌊 {signal.symbol} LIQUIDATION WAVE",
         "ORDER_FLOW_SHIFT": f"📚 {signal.symbol} ORDER-FLOW SHIFT",
+        "LARGE_TRADE_FLOW": f"🐋 {signal.symbol} LARGE-TRADE FLOW",
     }
     oi_value = float(derivatives.get("open_interest_value", 0.0))
     liquidation_total = float(derivatives.get("long_liquidations_1h", 0.0)) + float(derivatives.get("short_liquidations_1h", 0.0))
@@ -593,6 +607,11 @@ def build_derivatives_alert_message(
             f"Book imbalance: {float(derivatives.get('orderbook_imbalance', 0.0)):+.1f}% (directional at ±15%)",
             f"Recent taker buys: {float(derivatives.get('taker_buy_ratio', 50.0)):.1f}% "
             f"(directional beyond 57.5% / below 42.5%)",
+            f"Largest trade: {price_text(derivatives.get('largest_trade_value', 0.0))} "
+            f"{derivatives.get('largest_trade_side', 'UNKNOWN')} — "
+            f"{float(derivatives.get('largest_trade_multiple', 0.0)):.1f}× median",
+            f"Large-trade net flow: {float(derivatives.get('large_flow_imbalance', 0.0)):+.1f}% "
+            f"across {float(derivatives.get('large_flow_share', 0.0)):.1f}% of sampled value",
             f"Provider: {derivatives.get('provider', 'UNKNOWN')}",
             "",
             f"Action: {action}",
@@ -651,6 +670,9 @@ def evaluate_derivatives_alert(
     liquidation_total = long_liquidations + short_liquidations
     book_imbalance = float(derivatives.get("orderbook_imbalance", 0.0))
     taker_flow_imbalance = float(derivatives.get("taker_flow_imbalance", 0.0))
+    large_flow_share = float(derivatives.get("large_flow_share", 0.0))
+    large_flow_imbalance = float(derivatives.get("large_flow_imbalance", 0.0))
+    largest_trade_multiple = float(derivatives.get("largest_trade_multiple", 0.0))
     active = setup_states.get(symbol)
 
     if active:
@@ -727,6 +749,27 @@ def evaluate_derivatives_alert(
                 symbol,
                 build_derivatives_alert_message(signal, derivatives, "ORDER_FLOW_SHIFT", action),
                 "Order-book depth and taker flow aligned strongly",
+            )
+
+    concentrated_large_flow = (
+        large_flow_share >= 15.0
+        and abs(large_flow_imbalance) >= 60.0
+        and largest_trade_multiple >= 10.0
+    )
+    if concentrated_large_flow:
+        side = "BUY" if large_flow_imbalance > 0 else "SELL"
+        key = make_alert_key(symbol, "LARGE_TRADE_FLOW", side)
+        if alert_allowed(key, DERIVATIVES_ALERT_COOLDOWN_SECONDS):
+            mark_alert_sent(key)
+            action = (
+                f"Unusually concentrated large {side.lower()} trades appeared. Use this as flow confirmation, not a standalone entry; large traders can hedge or reverse."
+            )
+            return AlertDecision(
+                True,
+                "LARGE_TRADE_FLOW",
+                symbol,
+                build_derivatives_alert_message(signal, derivatives, "LARGE_TRADE_FLOW", action),
+                "Exceptional large trades became directionally concentrated",
             )
 
     if abs(oi_5m) >= 5.0 or abs(oi_1h) >= 10.0:
